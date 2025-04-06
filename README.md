@@ -2,7 +2,8 @@
 
 Library and command-line tools to traverse the macOS accessibility tree and simulate user input actions. Allows interaction with UI elements of other applications.
 
-![Demo](https://github.com/user-attachments/assets/d8dc75ba-5b15-492c-bb40-d2bc5b65483e)
+
+https://github.com/user-attachments/assets/d8dc75ba-5b15-492c-bb40-d2bc5b65483e
 
 ## Building the Tools
 
