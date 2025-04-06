@@ -63,31 +63,50 @@ let highlightDuration = parsedDuration ?? 3.0
 
 fputs("info: Target PID: \(targetPID), Highlight Duration: \(highlightDuration) seconds.\n", stderr)
 
-// 2. Call the Library Function
+// 2. Call the Library Function and Capture Response
 do {
     fputs("info: Calling highlightVisibleElements...\n", stderr)
-    // Call the highlight function from your library
-    try MacosUseSDK.highlightVisibleElements(pid: targetPID, duration: highlightDuration)
+    // Call the highlight function and store the returned ResponseData
+    let responseData = try MacosUseSDK.highlightVisibleElements(pid: targetPID, duration: highlightDuration)
 
-    fputs("info: highlightVisibleElements call dispatched successfully.\n", stderr)
+    fputs("info: highlightVisibleElements call dispatched successfully (returned \(responseData.elements.count) elements).\n", stderr)
     fputs("      Overlays appear/disappear asynchronously on the main thread.\n", stderr)
-    fputs("      Keeping the tool alive for \(highlightDuration + 1.0) seconds to allow UI updates...\n", stderr)
 
-    // 3. Keep the Main Thread Alive
-    // IMPORTANT: Since highlightVisibleElements uses DispatchQueue.main.async and asyncAfter
-    // for UI updates, this command-line tool needs to keep the main run loop
-    // running long enough for those updates to occur. A GUI app wouldn't need this.
-    // We run it slightly longer than the highlight duration.
+    // 3. Encode the ResponseData to JSON
+    fputs("info: Encoding traversal response to JSON...\n", stderr)
+    let encoder = JSONEncoder()
+    // Optionally make the output prettier
+    // encoder.outputFormatting = [.prettyPrinted, .sortedKeys] // Uncomment for human-readable JSON
+    let jsonData = try encoder.encode(responseData)
+
+    // 4. Print JSON to standard output
+    guard let jsonString = String(data: jsonData, encoding: .utf8) else {
+        throw MacosUseSDKError.internalError("Failed to convert JSON data to UTF-8 string.")
+    }
+    print(jsonString) // Print JSON to stdout
+    fputs("info: Successfully printed JSON response to stdout.\n", stderr)
+
+    // 5. Keep the Main Thread Alive for UI Updates
+    fputs("info: Keeping the tool alive for \(highlightDuration + 1.0) seconds to allow UI updates...\n", stderr)
+    // IMPORTANT: Still need this for the visual highlights to appear/disappear
     RunLoop.main.run(until: Date(timeIntervalSinceNow: highlightDuration + 1.0))
 
     fputs("info: Run loop finished. Tool exiting normally.\n", stderr)
     exit(0) // Success
 
 } catch let error as MacosUseSDKError {
+    // Specific SDK errors
     fputs("❌ Error from MacosUseSDK: \(error.localizedDescription)\n", stderr)
     exit(1)
 } catch {
-    // Catch other potential errors
+    // Other errors (e.g., JSON encoding failure)
     fputs("❌ An unexpected error occurred: \(error.localizedDescription)\n", stderr)
     exit(1)
 }
+
+
+/*
+
+swift run HighlightTraversalTool $(swift run AppOpenerTool Messages) --duration 5
+
+*/
