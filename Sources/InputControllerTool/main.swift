@@ -154,3 +154,10 @@ do {
 
 // Should not be reached due to finish() calls, but satisfies the compiler
 exit(0)
+
+/*
+# Example: Open Calculator and type 2*3=
+swift run AppOpenerTool Calculator
+# (Wait a moment or use the PID from above if needed)
+swift run InputControllerTool writetext "2*3="
+*/
