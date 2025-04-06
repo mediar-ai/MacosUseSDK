@@ -66,3 +66,7 @@ struct AppOpenerTool {
         }
     }
 } // End of struct AppOpenerTool
+
+/*
+swift run AppOpenerTool Messages
+*/
