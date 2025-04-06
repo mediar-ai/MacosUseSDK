@@ -59,4 +59,9 @@ do {
 } catch {
     fputs("❌ An unexpected error occurred: \(error.localizedDescription)\n", stderr)
     exit(1)
-} 
+}
+
+/*
+# Example: Get visible elements from Messages app
+swift run TraversalTool --visible-only $(swift run AppOpenerTool Messages)
+*/ 
