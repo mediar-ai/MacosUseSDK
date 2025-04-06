@@ -43,24 +43,20 @@ All tools output informational logs and timing data to `stderr`. Primary output 
     *   `--visible-only`: Only include elements that have a position and size (are geometrically visible).
 *   **Examples:**
     ```bash
-    # Get all elements for PID 12345
-    swift run TraversalTool 12345 > app_elements.json
-    # Get only visible elements for PID 12345
-    swift run TraversalTool --visible-only 12345 > visible_elements.json
+    # Get only visible elements for Messages app
+    swift run TraversalTool --visible-only $(swift run AppOpenerTool Messages)
     ```
 
 ### HighlightTraversalTool
 
-*   **Purpose:** Traverses the accessibility tree of a running application (specified by PID) and draws temporary red boxes around all visible UI elements. Useful for debugging accessibility structures.
+*   **Purpose:** Traverses the accessibility tree of a running application (specified by PID) and draws temporary red boxes around all visible UI elements. Also outputs traversal data (JSON) to `stdout`. Useful for debugging accessibility structures.
 *   **Usage:** `HighlightTraversalTool <PID> [--duration <seconds>]`
 *   **Options:**
     *   `--duration <seconds>`: Specifies how long the highlights remain visible (default: 3.0 seconds).
 *   **Examples:**
     ```bash
-    # Highlight elements in PID 12345 for 5 seconds
-    swift run HighlightTraversalTool 12345 --duration 5
-    # Highlight elements using default duration
-    swift run HighlightTraversalTool 67890
+    # Combine with AppOpenerTool to open Messages and highlight it
+    swift run HighlightTraversalTool $(swift run AppOpenerTool Messages) --duration 5
     ```
     *Note: This tool needs to keep running for the duration specified to manage the highlights.*
 
