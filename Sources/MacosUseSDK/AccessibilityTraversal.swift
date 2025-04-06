@@ -29,7 +29,7 @@ public enum MacosUseSDKError: Error, LocalizedError {
 
 // --- Public Data Structures for API Response ---
 
-public struct ElementData: Codable, Hashable {
+public struct ElementData: Codable, Hashable, Sendable {
     public var role: String
     public var text: String?
     public var x: Double?
