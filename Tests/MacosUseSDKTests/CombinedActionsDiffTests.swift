@@ -28,43 +28,50 @@ final class CombinedActionsDiffTests: XCTestCase {
     override func tearDown() async throws {
         fputs("info: Test teardown - Terminating Calculator (PID: \(calculatorPID ?? -1))...\n", stderr)
         calculatorApp?.terminate()
-        // Give it time to terminate
-        try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+        // Give it more time to terminate AND for async UI cleanup (esp. traversal highlights) to hopefully settle
+        fputs("info: Test teardown - Waiting 1.5 seconds for app termination and UI cleanup...\n", stderr) // Log clarity added
+        // Increased delay from 0.5s to 1.5s to allow more time for async window closing operations.
+        try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 seconds
         calculatorApp = nil
         calculatorPID = nil
+        fputs("info: Test teardown - Finished.\n", stderr)
     }
 
-    // Example test: Type '2*3=' and print the diff
+    // Test: Type '2*3=' with action viz + traversal highlight and print the diff
     @MainActor
-    func testCalculatorMultiplyWithDiff() async throws {
+    func testCalculatorMultiplyWithActionAndTraversalHighlight() async throws {
         guard let pid = calculatorPID else {
             XCTFail("Calculator PID not available")
             return
         }
 
-        // --- Action Sequence ---
-        // Note: In a real test, you might find the button coords dynamically first.
-        // For simplicity, assume we know where '2', '*', '3', '=' are approximately.
-        // Or, better, use writeTextWithDiff if applicable.
+        fputs("\ninfo: === Starting testCalculatorMultiplyWithActionAndTraversalHighlight ===\n", stderr)
 
-        // Example using writeTextWithDiff
-        fputs("info: Test run - Calling writeTextWithDiff for '2*3=' (using default delay)...\n", stderr)
-        let result = try await CombinedActions.writeTextWithDiff(
-            text: "2*3=", // Calculator understands keystrokes like this
+        // --- Define durations for test ---
+        let testActionHighlightDuration: Double = 0.4
+        let testTraversalHighlightDuration: Double = 2.0 // Duration passed to SDK function
+        let testDelayNano: UInt64 = 150_000_000
+
+        // --- Action Sequence with Highlighting ---
+        fputs("info: Test run - Calling writeTextWithActionAndTraversalHighlight for '2*3='...\n", stderr)
+        let result = try await CombinedActions.writeTextWithActionAndTraversalHighlight(
+            text: "2*3=",
             pid: pid,
-            onlyVisibleElements: true // Usually want visible for tests
+            onlyVisibleElements: true,
+            actionHighlightDuration: testActionHighlightDuration,
+            traversalHighlightDuration: testTraversalHighlightDuration, // Pass 2.0s duration
+            delayAfterActionNano: testDelayNano
         )
-        fputs("info: Test run - writeTextWithDiff completed.\n", stderr)
+        fputs("info: Test run - writeTextWithActionAndTraversalHighlight returned (highlighting may start appearing).\n", stderr)
 
         // --- Print Diff ---
-        fputs("info: --- Traversal Diff Results ---\n", stderr)
+        fputs("info: --- Traversal Diff Results (Highlighted) ---\n", stderr)
 
         fputs("info: Added Elements (\(result.diff.added.count)):\n", stderr)
         if result.diff.added.isEmpty {
             fputs("info:   (None)\n", stderr)
         } else {
             for element in result.diff.added {
-                // Print relevant info for each added element
                 fputs("info:   + Role: \(element.role), Text: \(element.text ?? "nil"), Pos: (\(element.x ?? -1), \(element.y ?? -1)), Size: (\(element.width ?? -1) x \(element.height ?? -1))\n", stderr)
             }
         }
@@ -74,14 +81,29 @@ final class CombinedActionsDiffTests: XCTestCase {
              fputs("info:   (None)\n", stderr)
         } else {
             for element in result.diff.removed {
-                 // Print relevant info for each removed element
                  fputs("info:   - Role: \(element.role), Text: \(element.text ?? "nil"), Pos: (\(element.x ?? -1), \(element.y ?? -1)), Size: (\(element.width ?? -1) x \(element.height ?? -1))\n", stderr)
             }
         }
-        fputs("info: --- End Diff Results ---\n", stderr)
+        fputs("info: --- End Diff Results (Highlighted) ---\n", stderr)
 
-        fputs("info: Test run - Diff printed.\n", stderr)
+        // --- Wait for Traversal Highlighting Cleanup BEFORE Test Ends ---
+        // Wait slightly longer than the traversal highlight duration (2.0s)
+        // to ensure its async cleanup task (closing the 36 overlay windows)
+        // has executed before tearDown terminates the Calculator app.
+        let highlightCompletionWaitSeconds = testTraversalHighlightDuration + 0.2 // Wait 2.2 seconds total
+        fputs("info: Test run - Waiting \(highlightCompletionWaitSeconds) seconds specifically for traversal highlighting cleanup to complete...\n", stderr)
+        try await Task.sleep(nanoseconds: UInt64(highlightCompletionWaitSeconds * 1_000_000_000))
+        fputs("info: Test run - Traversal highlight cleanup wait finished. Proceeding to finish test function.\n", stderr)
+        // --- END WAIT ---
+
+        fputs("info: === Finished testCalculatorMultiplyWithActionAndTraversalHighlight ===\n", stderr)
+        // Teardown (which terminates the app) runs AFTER this function returns.
+        // The 1.5s delay in tearDown remains as a final safety net.
     }
+    // --- END TEST ---
 
     // Add more test methods for clickWithDiff, pressKeyWithDiff etc.
+    // You can add similar tests for clickWithActionAndTraversalHighlight and pressKeyWithActionAndTraversalHighlight
+    // For click tests, you might need to first traverse to find the coordinates of a button
+    // (e.g., the '5' button) and then pass those coordinates to the click function.
 }
