@@ -13,7 +13,6 @@ public struct TraversalDiff: Codable {
 /// Holds the results of an action performed between two accessibility traversals,
 /// including the state before, the state after, and the calculated difference.
 public struct ActionDiffResult: Codable {
-    public let beforeAction: ResponseData
     public let afterAction: ResponseData
     public let diff: TraversalDiff
 }
@@ -195,7 +194,7 @@ public enum CombinedActions {
     ///   - point: The `CGPoint` where the click should occur (screen coordinates).
     ///   - pid: The Process ID (PID) of the application to traverse.
     ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Defaults to false.
-    ///   - delayAfterActionNano: Nanoseconds to wait after the action before the second traversal. Default 200ms.
+    ///   - delayAfterActionNano: Nanoseconds to wait after the action before the second traversal. Default 100ms.
     /// - Returns: An `ActionDiffResult` containing traversals before/after the click and the diff.
     /// - Throws: `MacosUseSDKError` if any step (traversal, click) fails.
     @MainActor
@@ -203,7 +202,7 @@ public enum CombinedActions {
         point: CGPoint,
         pid: Int32,
         onlyVisibleElements: Bool = false,
-        delayAfterActionNano: UInt64 = 200_000_000 // 200 ms default
+        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
     ) async throws -> ActionDiffResult {
         fputs("info: starting combined action 'clickWithDiff' at (\(point.x), \(point.y)) for PID \(pid)\n", stderr)
 
@@ -233,7 +232,6 @@ public enum CombinedActions {
 
         // Step 6: Prepare and Return Result
         let result = ActionDiffResult(
-            beforeAction: beforeTraversal,
             afterAction: afterTraversal,
             diff: diff
         )
@@ -248,7 +246,7 @@ public enum CombinedActions {
     ///   - flags: The modifier flags (`CGEventFlags`).
     ///   - pid: The Process ID (PID) of the application to traverse.
     ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Defaults to false.
-    ///   - delayAfterActionNano: Nanoseconds to wait after the action before the second traversal. Default 200ms.
+    ///   - delayAfterActionNano: Nanoseconds to wait after the action before the second traversal. Default 100ms.
     /// - Returns: An `ActionDiffResult` containing traversals before/after the key press and the diff.
     /// - Throws: `MacosUseSDKError` if any step fails.
     @MainActor
@@ -257,7 +255,7 @@ public enum CombinedActions {
         flags: CGEventFlags = [],
         pid: Int32,
         onlyVisibleElements: Bool = false,
-        delayAfterActionNano: UInt64 = 200_000_000 // 200 ms default
+        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
     ) async throws -> ActionDiffResult {
          fputs("info: starting combined action 'pressKeyWithDiff' (key: \(keyCode), flags: \(flags.rawValue)) for PID \(pid)\n", stderr)
 
@@ -287,7 +285,6 @@ public enum CombinedActions {
 
         // Step 6: Prepare and Return Result
         let result = ActionDiffResult(
-            beforeAction: beforeTraversal,
             afterAction: afterTraversal,
             diff: diff
         )
@@ -301,7 +298,7 @@ public enum CombinedActions {
     ///   - text: The `String` to type.
     ///   - pid: The Process ID (PID) of the application to traverse.
     ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Defaults to false.
-    ///   - delayAfterActionNano: Nanoseconds to wait after the action before the second traversal. Default 200ms.
+    ///   - delayAfterActionNano: Nanoseconds to wait after the action before the second traversal. Default 100ms.
     /// - Returns: An `ActionDiffResult` containing traversals before/after typing and the diff.
     /// - Throws: `MacosUseSDKError` if any step fails.
     @MainActor
@@ -309,7 +306,7 @@ public enum CombinedActions {
         text: String,
         pid: Int32,
         onlyVisibleElements: Bool = false,
-        delayAfterActionNano: UInt64 = 200_000_000 // 200 ms default
+        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
     ) async throws -> ActionDiffResult {
          fputs("info: starting combined action 'writeTextWithDiff' (text: \"\(text)\") for PID \(pid)\n", stderr)
 
@@ -339,7 +336,6 @@ public enum CombinedActions {
 
         // Step 6: Prepare and Return Result
         let result = ActionDiffResult(
-            beforeAction: beforeTraversal,
             afterAction: afterTraversal,
             diff: diff
         )
@@ -348,5 +344,183 @@ public enum CombinedActions {
     }
 
      // Add similar '...WithDiff' functions for doubleClick, rightClick, etc. as needed
+
+
+    // --- NEW: Combined Actions with Action Visualization AND Traversal Highlighting ---
+
+    /// Performs a left click with visual feedback, bracketed by traversals (before action, after action with highlighting), and returns the diff.
+    ///
+    /// - Parameters:
+    ///   - point: The `CGPoint` where the click should occur.
+    ///   - pid: The Process ID (PID) of the application.
+    ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Default false.
+    ///   - actionHighlightDuration: Duration (seconds) for the click's visual feedback pulse. Default 0.5s.
+    ///   - traversalHighlightDuration: Duration (seconds) for highlighting all elements found in the second traversal. Default 3.0s.
+    ///   - delayAfterActionNano: Nanoseconds to wait after the click before the second traversal. Default 100ms.
+    /// - Returns: An `ActionDiffResult` containing the second traversal's data and the diff.
+    /// - Throws: `MacosUseSDKError` if any step fails.
+    @MainActor
+    public static func clickWithActionAndTraversalHighlight(
+        point: CGPoint,
+        pid: Int32,
+        onlyVisibleElements: Bool = false,
+        actionHighlightDuration: Double = 0.5, // Duration for the click pulse
+        traversalHighlightDuration: Double = 3.0, // Duration for highlighting elements
+        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
+    ) async throws -> ActionDiffResult {
+        fputs("info: starting combined action 'clickWithActionAndTraversalHighlight' at (\(point.x), \(point.y)) for PID \(pid)\n", stderr)
+
+        // Step 1: Traverse Before Action
+        fputs("info: calling traverseAccessibilityTree (before action)...\n", stderr)
+        let beforeTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
+        fputs("info: traversal (before action) completed.\n", stderr)
+
+        // Step 2: Perform the Click WITH Visualization
+        fputs("info: calling clickMouseAndVisualize (duration: \(actionHighlightDuration)s)...\n", stderr)
+        // Note: Assuming clickMouseAndVisualize is available globally or via MacosUseSDK namespace
+        try MacosUseSDK.clickMouseAndVisualize(at: point, duration: actionHighlightDuration)
+        fputs("info: clickMouseAndVisualize dispatched successfully.\n", stderr)
+
+        // Step 3: Wait for UI to Update
+        fputs("info: waiting \(Double(delayAfterActionNano) / 1_000_000_000.0) seconds after action...\n", stderr)
+        try await Task.sleep(nanoseconds: delayAfterActionNano)
+
+        // Step 4: Traverse After Action WITH Highlighting
+        // This function performs the traversal AND dispatches the highlighting
+        fputs("info: calling highlightVisibleElements (duration: \(traversalHighlightDuration)s)...\n", stderr)
+        // Note: Assuming highlightVisibleElements is available globally or via MacosUseSDK namespace
+        let afterTraversalHighlightResult = try MacosUseSDK.highlightVisibleElements(pid: pid, duration: traversalHighlightDuration)
+        fputs("info: highlightVisibleElements completed traversal part and dispatched highlighting.\n", stderr)
+
+        // Step 5: Calculate Diff using data from the two traversals
+        fputs("info: calculating traversal diff...\n", stderr)
+        let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversalHighlightResult.elements)
+        fputs("info: diff calculation completed.\n", stderr)
+
+        // Step 6: Prepare and Return Result
+        let result = ActionDiffResult(
+            afterAction: afterTraversalHighlightResult, // Return data from the *second* traversal
+            diff: diff
+        )
+        fputs("info: combined action 'clickWithActionAndTraversalHighlight' finished.\n", stderr)
+        return result
+    }
+
+
+    /// Presses a key with visual feedback (if implemented), bracketed by traversals (before action, after action with highlighting), and returns the diff.
+    ///
+    /// - Parameters:
+    ///   - keyCode: The `CGKeyCode` of the key to press.
+    ///   - flags: The modifier flags (`CGEventFlags`).
+    ///   - pid: The Process ID (PID) of the application.
+    ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Default false.
+    ///   - actionHighlightDuration: Duration (seconds) for the key press visual feedback (currently ignored). Default 0.5s.
+    ///   - traversalHighlightDuration: Duration (seconds) for highlighting all elements found in the second traversal. Default 3.0s.
+    ///   - delayAfterActionNano: Nanoseconds to wait after the key press before the second traversal. Default 100ms.
+    /// - Returns: An `ActionDiffResult` containing the second traversal's data and the diff.
+    /// - Throws: `MacosUseSDKError` if any step fails.
+    @MainActor
+    public static func pressKeyWithActionAndTraversalHighlight(
+        keyCode: CGKeyCode,
+        flags: CGEventFlags = [],
+        pid: Int32,
+        onlyVisibleElements: Bool = false,
+        actionHighlightDuration: Double = 0.5, // Duration for visualization (currently unused by pressKeyAndVisualize)
+        traversalHighlightDuration: Double = 3.0, // Duration for highlighting elements
+        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
+    ) async throws -> ActionDiffResult {
+         fputs("info: starting combined action 'pressKeyWithActionAndTraversalHighlight' (key: \(keyCode), flags: \(flags.rawValue)) for PID \(pid)\n", stderr)
+
+        // Step 1: Traverse Before Action
+        fputs("info: calling traverseAccessibilityTree (before action)...\n", stderr)
+        let beforeTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
+        fputs("info: traversal (before action) completed.\n", stderr)
+
+        // Step 2: Perform the Key Press WITH Visualization (currently no-op for visualization)
+        fputs("info: calling pressKeyAndVisualize (duration: \(actionHighlightDuration)s)...\n", stderr)
+        // Note: Assuming pressKeyAndVisualize is available globally or via MacosUseSDK namespace
+        try MacosUseSDK.pressKeyAndVisualize(keyCode: keyCode, flags: flags, duration: actionHighlightDuration)
+        fputs("info: pressKeyAndVisualize completed successfully (visualization likely skipped).\n", stderr)
+
+        // Step 3: Wait for UI to Update
+        fputs("info: waiting \(Double(delayAfterActionNano) / 1_000_000_000.0) seconds after action...\n", stderr)
+        try await Task.sleep(nanoseconds: delayAfterActionNano)
+
+        // Step 4: Traverse After Action WITH Highlighting
+        fputs("info: calling highlightVisibleElements (duration: \(traversalHighlightDuration)s)...\n", stderr)
+        // Note: Assuming highlightVisibleElements is available globally or via MacosUseSDK namespace
+        let afterTraversalHighlightResult = try MacosUseSDK.highlightVisibleElements(pid: pid, duration: traversalHighlightDuration)
+        fputs("info: highlightVisibleElements completed traversal part and dispatched highlighting.\n", stderr)
+
+        // Step 5: Calculate Diff
+        fputs("info: calculating traversal diff...\n", stderr)
+        let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversalHighlightResult.elements)
+        fputs("info: diff calculation completed.\n", stderr)
+
+        // Step 6: Prepare and Return Result
+        let result = ActionDiffResult(
+            afterAction: afterTraversalHighlightResult,
+            diff: diff
+        )
+         fputs("info: combined action 'pressKeyWithActionAndTraversalHighlight' finished.\n", stderr)
+        return result
+    }
+
+    /// Types text with visual feedback (if implemented), bracketed by traversals (before action, after action with highlighting), and returns the diff.
+    ///
+    /// - Parameters:
+    ///   - text: The `String` to type.
+    ///   - pid: The Process ID (PID) of the application.
+    ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Default false.
+    ///   - actionHighlightDuration: Duration (seconds) for the text input visual feedback (currently ignored). Default 0.5s.
+    ///   - traversalHighlightDuration: Duration (seconds) for highlighting all elements found in the second traversal. Default 3.0s.
+    ///   - delayAfterActionNano: Nanoseconds to wait after typing before the second traversal. Default 100ms.
+    /// - Returns: An `ActionDiffResult` containing the second traversal's data and the diff.
+    /// - Throws: `MacosUseSDKError` if any step fails.
+    @MainActor
+    public static func writeTextWithActionAndTraversalHighlight(
+        text: String,
+        pid: Int32,
+        onlyVisibleElements: Bool = false,
+        actionHighlightDuration: Double = 0.5, // Duration for visualization (currently unused by writeTextAndVisualize)
+        traversalHighlightDuration: Double = 3.0, // Duration for highlighting elements
+        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
+    ) async throws -> ActionDiffResult {
+         fputs("info: starting combined action 'writeTextWithActionAndTraversalHighlight' (text: \"\(text)\") for PID \(pid)\n", stderr)
+
+        // Step 1: Traverse Before Action
+        fputs("info: calling traverseAccessibilityTree (before action)...\n", stderr)
+        let beforeTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
+        fputs("info: traversal (before action) completed.\n", stderr)
+
+        // Step 2: Perform the Text Writing WITH Visualization (currently no-op for visualization)
+        fputs("info: calling writeTextAndVisualize (duration: \(actionHighlightDuration)s)...\n", stderr)
+        // Note: Assuming writeTextAndVisualize is available globally or via MacosUseSDK namespace
+        try MacosUseSDK.writeTextAndVisualize(text, duration: actionHighlightDuration)
+        fputs("info: writeTextAndVisualize completed successfully (visualization likely skipped).\n", stderr)
+
+        // Step 3: Wait for UI to Update
+        fputs("info: waiting \(Double(delayAfterActionNano) / 1_000_000_000.0) seconds after action...\n", stderr)
+        try await Task.sleep(nanoseconds: delayAfterActionNano)
+
+        // Step 4: Traverse After Action WITH Highlighting
+        fputs("info: calling highlightVisibleElements (duration: \(traversalHighlightDuration)s)...\n", stderr)
+        // Note: Assuming highlightVisibleElements is available globally or via MacosUseSDK namespace
+        let afterTraversalHighlightResult = try MacosUseSDK.highlightVisibleElements(pid: pid, duration: traversalHighlightDuration)
+        fputs("info: highlightVisibleElements completed traversal part and dispatched highlighting.\n", stderr)
+
+        // Step 5: Calculate Diff
+        fputs("info: calculating traversal diff...\n", stderr)
+        let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversalHighlightResult.elements)
+        fputs("info: diff calculation completed.\n", stderr)
+
+        // Step 6: Prepare and Return Result
+        let result = ActionDiffResult(
+            afterAction: afterTraversalHighlightResult,
+            diff: diff
+        )
+         fputs("info: combined action 'writeTextWithActionAndTraversalHighlight' finished.\n", stderr)
+        return result
+    }
 
 }
