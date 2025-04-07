@@ -7,6 +7,7 @@ import Foundation
 public enum FeedbackType {
     case box(text: String) // Existing box with optional text
     case circle           // New simple circle
+    case caption(text: String) // New type for large screen-center text
 }
 
 // Define a custom view that draws the rectangle and text with truncation
@@ -14,9 +15,12 @@ internal class OverlayView: NSView {
     var feedbackType: FeedbackType = .box(text: "") // Property to hold the type and data
 
     // Constants for drawing
-    let padding: CGFloat = 3
+    let padding: CGFloat = 10 // Increased padding for caption
     let frameLineWidth: CGFloat = 2
     let circleRadius: CGFloat = 15 // Radius for the circle feedback
+    let captionFontSize: CGFloat = 36 // Font size for caption
+    let captionBackgroundColor = NSColor.black.withAlphaComponent(0.6) // Semi-transparent black background
+    let captionTextColor = NSColor.white
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
@@ -26,6 +30,8 @@ internal class OverlayView: NSView {
             drawBox(with: displayText)
         case .circle:
             drawCircle()
+        case .caption(let captionText):
+            drawCaption(with: captionText) // Call the new drawing method
         }
     }
 
@@ -108,6 +114,57 @@ internal class OverlayView: NSView {
         }
     }
 
+    // New method to draw the caption
+    private func drawCaption(with text: String) {
+        fputs("debug: OverlayView drawing caption: '\(text)'\n", stderr)
+
+        // Draw background
+        captionBackgroundColor.setFill()
+        let backgroundRect = bounds.insetBy(dx: frameLineWidth / 2.0, dy: frameLineWidth / 2.0) // Adjust for potential border line width if we add one later
+        let backgroundPath = NSBezierPath(roundedRect: backgroundRect, xRadius: 8, yRadius: 8) // Rounded corners
+        backgroundPath.fill()
+
+        // --- Text Drawing ---
+        if !text.isEmpty {
+            // Define text attributes
+            let textFont = NSFont.systemFont(ofSize: captionFontSize, weight: .medium)
+            let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.alignment = .center // Center align text
+
+            let textAttributes: [NSAttributedString.Key: Any] = [
+                .font: textFont,
+                .foregroundColor: captionTextColor,
+                .paragraphStyle: paragraphStyle
+            ]
+
+            // Calculate available area for text (bounds - padding)
+            let availableRect = bounds.insetBy(dx: padding, dy: padding)
+            var stringToDraw = text
+            var textSize = stringToDraw.size(withAttributes: textAttributes)
+
+            // Basic truncation if text wider than available space (though less likely for centered captions)
+             if textSize.width > availableRect.width && availableRect.width > 0 {
+                 fputs("warning: Caption text '\(stringToDraw)' (\(textSize.width)) wider than available \(availableRect.width), may clip.\n", stderr)
+                 // Simple clipping will occur, could implement more complex truncation if needed
+             }
+             if textSize.height > availableRect.height {
+                  fputs("warning: Caption text '\(stringToDraw)' (\(textSize.height)) taller than available \(availableRect.height), may clip.\n", stderr)
+             }
+
+            // Calculate position to center the text vertically and horizontally within the available rect
+             let textX = availableRect.origin.x
+             let textY = availableRect.origin.y + (availableRect.height - textSize.height) / 2.0 // Center vertically
+             let textRect = NSRect(x: textX, y: textY, width: availableRect.width, height: textSize.height)
+
+
+            // Draw the text string centered
+            fputs("debug: OverlayView drawing caption text '\(stringToDraw)' in rect \(textRect)\n", stderr)
+            (stringToDraw as NSString).draw(in: textRect, withAttributes: textAttributes)
+        } else {
+             fputs("debug: OverlayView no caption text to draw.\n", stderr)
+        }
+    }
+
     // Update initializer to accept FeedbackType
     init(frame frameRect: NSRect, type: FeedbackType) {
         self.feedbackType = type
@@ -130,7 +187,7 @@ internal class OverlayView: NSView {
 // ADDED: @MainActor annotation to ensure UI operations run on the main thread
 @MainActor
 internal func createOverlayWindow(frame: NSRect, type: FeedbackType) -> NSWindow {
-    // fputs("debug: Creating overlay window with frame: \(frame), type: \(type)'\n", stderr)
+    fputs("debug: Creating overlay window with frame: \(frame), type: \(type)\n", stderr) // Log includes type now
     // Now safe to call NSWindow initializer and set properties from here
     let window = NSWindow(
         contentRect: frame,
@@ -141,7 +198,12 @@ internal func createOverlayWindow(frame: NSRect, type: FeedbackType) -> NSWindow
 
     // Configuration for transparent, floating overlay
     window.isOpaque = false
-    window.backgroundColor = .clear // Transparent background
+    // Make background clear ONLY if not a caption (caption view draws its own background)
+    if case .caption = type {
+        window.backgroundColor = .clear // View draws background
+    } else {
+        window.backgroundColor = .clear // Original behavior
+    }
     window.hasShadow = false        // No window shadow
     window.level = .floating        // Keep above normal windows
     window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle] // Visible on all spaces
@@ -157,78 +219,130 @@ internal func createOverlayWindow(frame: NSRect, type: FeedbackType) -> NSWindow
 }
 
 // --- New Public Function for Simple Visual Feedback ---
-/// Displays a temporary visual indicator (e.g., a circle) at specified screen coordinates.
-/// This version includes a pulsing/fading animation.
+/// Displays a temporary visual indicator (e.g., a circle, a caption) at specified screen coordinates.
+/// This version includes a pulsing/fading animation for circles. Captions simply appear and disappear.
 /// - Parameters:
-///   - point: The center point (`CGPoint`) in screen coordinates for the visual feedback.
-///   - type: The type of feedback to display (currently only `.circle` is animated).
-///   - size: The desired initial size (width/height) of the overlay window.
-///   - duration: How long the feedback animation should run and the window remain visible, in seconds.
+///   - point: The center point (`CGPoint`) in screen coordinates for the visual feedback. For captions, this is usually the screen center.
+///   - type: The type of feedback to display (`FeedbackType`).
+///   - size: The desired size (width/height) of the overlay window. Defaults work for circle, consider larger for captions.
+///   - duration: How long the feedback should remain visible, in seconds.
 @MainActor // Ensure this runs on the main thread
-public func showVisualFeedback(at point: CGPoint, type: FeedbackType = .circle, size: CGSize = CGSize(width: 30, height: 30), duration: Double = 0.5) {
+public func showVisualFeedback(at point: CGPoint, type: FeedbackType, size: CGSize = CGSize(width: 30, height: 30), duration: Double = 0.5) {
     // Requires main thread for UI work
     guard Thread.isMainThread else {
+        fputs("warning: showVisualFeedback called off main thread, dispatching. Point: \(point), Type: \(type)\n", stderr)
         DispatchQueue.main.async {
             showVisualFeedback(at: point, type: type, size: size, duration: duration)
         }
         return
     }
 
-    fputs("info: showVisualFeedback called for point \(point), type \(type), duration \(duration)s.\n", stderr)
+    fputs("info: showVisualFeedback called for point \(point), type \(type), size \(size), duration \(duration)s.\n", stderr)
 
-    // --- Coordinate Conversion (same as before) ---
+    // --- Coordinate Conversion (Using AppKit bottom-left origin) ---
+    // Screen height is needed to convert the Y coordinate.
     let screenHeight = NSScreen.main?.frame.height ?? 0
     if screenHeight == 0 {
         fputs("warning: Could not get main screen height, coordinates might be incorrect.\n", stderr)
     }
+    // Calculate origin based on the center point provided
     let originX = point.x - (size.width / 2.0)
-    let originY = screenHeight - point.y - (size.height / 2.0)
+    let originY = screenHeight - point.y - (size.height / 2.0) // Convert Y from top-left to bottom-left
     let frame = NSRect(x: originX, y: originY, width: size.width, height: size.height)
     fputs("debug: Creating feedback window with AppKit frame: \(frame)\n", stderr)
 
-    // --- Create Window (same as before) ---
+    // --- Create Window ---
     let window = createOverlayWindow(frame: frame, type: type)
 
-    // --- Make Window Visible (same as before) ---
+    // --- Make Window Visible ---
     window.makeKeyAndOrderFront(nil)
 
-    // --- Apply Animation (New Part) ---
-    if let overlayView = window.contentView as? OverlayView, case .circle = type {
-        fputs("debug: Applying pulse/fade animation to overlay layer.\n", stderr)
+    // --- Apply Animation (Only for Circle or Caption Type) ---
+    if let overlayView = window.contentView as? OverlayView {
         overlayView.wantsLayer = true // Ensure the view has a layer for animation
 
-        // Define the animations
-        let scaleAnimation = CABasicAnimation(keyPath: "transform.scale")
-        scaleAnimation.fromValue = 0.7 // Start slightly smaller
-        scaleAnimation.toValue = 1.8   // Expand larger than final size
-        scaleAnimation.duration = duration // Use the feedback duration for the animation
+        if case .circle = type {
+            fputs("debug: Applying pulse/fade animation to circle overlay layer.\n", stderr)
+            // --- Circle Pulse/Fade Animation ---
+            let scaleAnimation = CABasicAnimation(keyPath: "transform.scale")
+            scaleAnimation.fromValue = 0.7
+            scaleAnimation.toValue = 1.8
+            scaleAnimation.duration = duration
 
-        let opacityAnimation = CABasicAnimation(keyPath: "opacity")
-        opacityAnimation.fromValue = 0.8 // Start mostly opaque
-        opacityAnimation.toValue = 0.0   // Fade out completely
-        opacityAnimation.duration = duration // Use the same duration
+            let opacityAnimation = CABasicAnimation(keyPath: "opacity")
+            opacityAnimation.fromValue = 0.8
+            opacityAnimation.toValue = 0.0
+            opacityAnimation.duration = duration
 
-        // Group the animations to run simultaneously
-        let animationGroup = CAAnimationGroup()
-        animationGroup.animations = [scaleAnimation, opacityAnimation]
-        animationGroup.duration = duration
-        animationGroup.timingFunction = CAMediaTimingFunction(name: .easeOut) // Makes the animation slow down towards the end
-        // Keep the final state (fully transparent and scaled) until the window closes
-        animationGroup.fillMode = .forwards
-        animationGroup.isRemovedOnCompletion = false
+            let animationGroup = CAAnimationGroup()
+            animationGroup.animations = [scaleAnimation, opacityAnimation]
+            animationGroup.duration = duration
+            animationGroup.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            animationGroup.fillMode = .forwards
+            animationGroup.isRemovedOnCompletion = false
+            overlayView.layer?.add(animationGroup, forKey: "pulseFadeEffect")
 
-        // Add the animation to the view's layer
-        overlayView.layer?.add(animationGroup, forKey: "pulseFadeEffect")
+        } else if case .caption = type {
+             fputs("debug: Applying entrance and fade-out animations to caption overlay layer.\n", stderr)
+
+             // --- Caption Entrance Animation (Scale Up & Fade In) ---
+             let entranceDuration = 0.2 // Duration for the entrance effect
+             let scaleInAnimation = CABasicAnimation(keyPath: "transform.scale")
+             scaleInAnimation.fromValue = 0.7 // Start slightly smaller
+             scaleInAnimation.toValue = 1.0   // Scale to normal size
+             scaleInAnimation.duration = entranceDuration
+
+             let fadeInAnimation = CABasicAnimation(keyPath: "opacity")
+             fadeInAnimation.fromValue = 0.0 // Start fully transparent
+             fadeInAnimation.toValue = 1.0   // Fade to fully opaque
+             fadeInAnimation.duration = entranceDuration
+
+             let entranceGroup = CAAnimationGroup()
+             entranceGroup.animations = [scaleInAnimation, fadeInAnimation]
+             entranceGroup.duration = entranceDuration
+             entranceGroup.timingFunction = CAMediaTimingFunction(name: .easeOut)
+             // `fillMode = .backwards` ensures the initial state (small, transparent) is applied *before* the animation starts
+             entranceGroup.fillMode = .backwards
+             // `isRemovedOnCompletion = true` (default) is fine here, we want the layer's normal state after entrance.
+             overlayView.layer?.add(entranceGroup, forKey: "captionEntranceEffect")
+
+
+             // --- Caption Fade-Out Animation (Starts near the end) ---
+             let fadeOutDuration = 0.3 // Duration of the fade-out
+             // Ensure fade-out doesn't start before entrance completes if total duration is very short
+             let fadeOutStartTime = max(entranceDuration, duration - fadeOutDuration)
+
+             let fadeOutAnimation = CABasicAnimation(keyPath: "opacity")
+             fadeOutAnimation.fromValue = 1.0 // Start opaque
+             fadeOutAnimation.toValue = 0.0   // Fade to transparent
+             fadeOutAnimation.duration = fadeOutDuration
+             // Use CACurrentMediaTime() + delay to schedule the start
+             fadeOutAnimation.beginTime = CACurrentMediaTime() + fadeOutStartTime
+             fadeOutAnimation.fillMode = .forwards // Keep final state (transparent)
+             fadeOutAnimation.isRemovedOnCompletion = false // Don't remove until window closes
+             overlayView.layer?.add(fadeOutAnimation, forKey: "captionFadeOut")
+
+        } else {
+            // Log if a type is added that doesn't have specific animation handling
+            fputs("debug: Animation skipped (unhandled FeedbackType or view issue).\n", stderr)
+        }
     } else {
-         fputs("debug: Animation skipped (not a circle or view issue).\n", stderr)
+        // Log if contentView isn't the expected OverlayView or is nil
+         fputs("warning: Could not get OverlayView from window content for animation.\n", stderr)
     }
 
 
-    // --- Schedule Cleanup (same as before) ---
-    // This now also serves to remove the window after the animation completes
+    // --- Schedule Cleanup ---
+    // Closes the window after the specified duration.
     DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-        fputs("debug: Closing feedback window after \(duration)s animation/duration.\n", stderr)
-        window.close() // Closing the window removes the layer and stops the effect
+        // Check if the window still exists before trying to close it
+        // (Could potentially be closed manually or by other means, though unlikely here)
+        if window.isVisible {
+             fputs("debug: Closing feedback window after \(duration)s duration. Type: \(type)\n", stderr)
+             window.close() // Closing the window removes the layer and stops any running animations implicitly.
+        } else {
+             fputs("debug: Feedback window already closed before cleanup timer fired. Type: \(type)\n", stderr)
+        }
     }
 }
 
