@@ -1,18 +1,113 @@
 import Foundation // Needed for fputs, etc.
 import CoreGraphics // Needed for CGPoint, CGKeyCode, CGEventFlags
 
-/// Represents the difference between two accessibility traversals.
-/// Currently focuses on elements added or removed. Detecting modifications
-/// to existing elements is complex without stable identifiers.
-public struct TraversalDiff: Codable {
+/// Represents a change in a specific attribute of an accessibility element.
+public struct AttributeChangeDetail: Codable, Sendable {
+    public let attributeName: String
+
+    // --- Fields for Simple Text Diff ---
+    /// Text added (e.g., if newValue = oldValue + addedText). Populated only for text attribute changes.
+    public let addedText: String?
+    /// Text removed (e.g., if oldValue = newValue + removedText). Populated only for text attribute changes.
+    public let removedText: String?
+
+    // --- Fallback Fields ---
+    /// Full old value, used for non-text attributes OR complex text changes.
+    public let oldValue: String?
+    /// Full new value, used for non-text attributes OR complex text changes.
+    public let newValue: String?
+
+
+    // --- Initializers ---
+
+    // Initializer for non-text attributes (simple old/new)
+    init<T: CustomStringConvertible>(attribute: String, before: T?, after: T?) {
+        guard attribute != "text" else {
+            // This initializer should not be called directly for text.
+            // Handle text changes via the dedicated text initializer below.
+            // For safety, provide a basic fallback if called incorrectly.
+             fputs("warning: Generic AttributeChangeDetail initializer called for 'text'. Use text-specific init.\n", stderr)
+             self.attributeName = attribute
+             self.oldValue = before.map { $0.description }
+             self.newValue = after.map { $0.description }
+             self.addedText = nil
+             self.removedText = nil
+             return
+        }
+        self.attributeName = attribute
+        self.oldValue = before.map { $0.description }
+        self.newValue = after.map { $0.description }
+        self.addedText = nil // Not applicable
+        self.removedText = nil // Not applicable
+    }
+
+    // Initializer for Doubles (position/size)
+     init(attribute: String, before: Double?, after: Double?, format: String = "%.1f") {
+         self.attributeName = attribute
+         self.oldValue = before.map { String(format: format, $0) }
+         self.newValue = after.map { String(format: format, $0) }
+         self.addedText = nil
+         self.removedText = nil
+     }
+
+     // --- UPDATED Initializer for Text Changes using CollectionDifference ---
+     init(textBefore: String?, textAfter: String?) {
+        self.attributeName = "text"
+
+        let old = textBefore ?? ""
+        let new = textAfter ?? ""
+
+        // Use CollectionDifference to find insertions and removals
+        let diff = new.difference(from: old)
+
+        var addedChars: [Character] = []
+        var removedChars: [Character] = []
+
+        // Process the calculated difference
+        for change in diff {
+            switch change {
+            case .insert(_, let element, _):
+                addedChars.append(element)
+            case .remove(_, let element, _):
+                removedChars.append(element)
+            }
+        }
+
+        // Assign collected characters to the respective fields, or nil if empty
+        self.addedText = addedChars.isEmpty ? nil : String(addedChars)
+        self.removedText = removedChars.isEmpty ? nil : String(removedChars)
+
+        // Since we now have potentially more granular diff info,
+        // we consistently set oldValue/newValue to nil for text changes
+        // to avoid redundancy in the output, as decided previously.
+        self.oldValue = nil
+        self.newValue = nil
+    }
+}
+
+/// Represents an element identified as potentially the same logical entity
+/// across two traversals, but with modified attributes.
+public struct ModifiedElement: Codable, Sendable {
+    /// The element data from the 'before' traversal.
+    public let before: ElementData
+    /// The element data from the 'after' traversal.
+    public let after: ElementData
+    /// A list detailing the specific attributes that changed.
+    public let changes: [AttributeChangeDetail]
+}
+
+/// Represents the difference between two accessibility traversals,
+/// now including added, removed, and modified elements with attribute details.
+public struct TraversalDiff: Codable, Sendable {
     public let added: [ElementData]
     public let removed: [ElementData]
-    // Future potential: public let modified: [ (before: ElementData, after: ElementData) ]
+    /// Elements identified as modified, along with their specific changes.
+    public let modified: [ModifiedElement]
 }
 
 /// Holds the results of an action performed between two accessibility traversals,
 /// including the state before, the state after, and the calculated difference.
-public struct ActionDiffResult: Codable {
+public struct ActionDiffResult: Codable, Sendable {
     public let afterAction: ResponseData
     public let diff: TraversalDiff
 }
@@ -170,7 +265,7 @@ public enum CombinedActions {
         let sortedRemoved = removedElements.sorted(by: elementSortPredicate)
 
 
-        return TraversalDiff(added: sortedAdded, removed: sortedRemoved)
+        return TraversalDiff(added: sortedAdded, removed: sortedRemoved, modified: [])
     }
 
     // Helper sorting predicate (consistent with AccessibilityTraversalOperation)
