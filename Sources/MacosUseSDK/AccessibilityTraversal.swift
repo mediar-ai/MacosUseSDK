@@ -56,7 +56,7 @@ public struct ElementData: Codable, Hashable, Sendable {
     }
 }
 
-public struct Statistics: Codable {
+public struct Statistics: Codable, Sendable {
     public var count: Int = 0
     public var excluded_count: Int = 0
     public var excluded_non_interactable: Int = 0
@@ -67,7 +67,7 @@ public struct Statistics: Codable {
     public var role_counts: [String: Int] = [:]
 }
 
-public struct ResponseData: Codable {
+public struct ResponseData: Codable, Sendable {
     public let app_name: String
     public var elements: [ElementData]
     public var stats: Statistics
