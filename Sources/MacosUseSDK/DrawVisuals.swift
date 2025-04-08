@@ -139,8 +139,8 @@ internal class OverlayView: NSView {
 
             // Calculate available area for text (bounds - padding)
             let availableRect = bounds.insetBy(dx: padding, dy: padding)
-            var stringToDraw = text
-            var textSize = stringToDraw.size(withAttributes: textAttributes)
+            let stringToDraw = text
+            let textSize = stringToDraw.size(withAttributes: textAttributes)
 
             // Basic truncation if text wider than available space (though less likely for centered captions)
              if textSize.width > availableRect.width && availableRect.width > 0 {
@@ -218,7 +218,25 @@ internal func createOverlayWindow(frame: NSRect, type: FeedbackType) -> NSWindow
     return window
 }
 
-// --- New Public Function for Simple Visual Feedback ---
+// --- Helper Function to Get Main Screen Center (Moved from HighlightInput.swift) ---
+/// Gets the center point of the main screen.
+/// - Returns: CGPoint of the center in screen coordinates, or nil if main screen not found.
+public func getMainScreenCenter() -> CGPoint? {
+    guard let mainScreen = NSScreen.main else {
+        fputs("error: could not get main screen.\n", stderr)
+        return nil
+    }
+    let screenRect = mainScreen.frame
+    let centerX = screenRect.midX
+    // AppKit coordinates (bottom-left origin) are used by NSWindow positioning.
+    // screenRect.midY correctly gives the vertical center in this coordinate system.
+    let centerY = screenRect.midY
+    let centerPoint = CGPoint(x: centerX, y: centerY)
+    // fputs("debug: calculated main screen center: \(centerPoint) from rect \(screenRect)\n", stderr)
+    return centerPoint
+}
+
+// --- Public API Function for Simple Visual Feedback ---
 /// Displays a temporary visual indicator (e.g., a circle, a caption) at specified screen coordinates.
 /// This version includes a pulsing/fading animation for circles. Captions simply appear and disappear.
 /// - Parameters:
@@ -346,55 +364,52 @@ public func showVisualFeedback(at point: CGPoint, type: FeedbackType, size: CGSi
     }
 }
 
-// --- Public API Function ---
-/// Highlights visible accessibility elements of a target application by drawing temporary overlay windows.
+// --- NEW Public API Function for Drawing Highlight Boxes ---
+/// Draws temporary overlay windows (highlight boxes) around the specified accessibility elements.
 ///
-/// This function first traverses the accessibility tree to find visible elements,
-/// then creates and displays overlay windows for each element found.
 /// The overlays automatically disappear after the specified duration.
+/// This function *only* draws; it does not perform accessibility traversal.
+/// Call `traverseAccessibilityTree` first to get the `ElementData`.
 ///
 /// - Important: This function schedules UI work on the main dispatch queue.
-///              It should be called from a context where the main run loop is active (e.g., a macOS Application).
-///              The function itself returns quickly with the traversal data; the overlays appear and disappear asynchronously.
+///              It should be called from a context where the main run loop is active.
+///              The function itself returns immediately; the overlays appear and disappear asynchronously.
 ///
-/// - Parameter pid: The Process ID (PID) of the target application.
+/// - Parameter elementsToHighlight: An array of `ElementData` representing the elements to highlight.
+///                                 Only elements with valid geometry (x, y, width > 0, height > 0) will be highlighted.
 /// - Parameter duration: The time in seconds for which the overlay windows should be visible. Defaults to 3.0 seconds.
-/// - Throws: `MacosUseSDKError` if accessibility traversal fails (e.g., permission denied, app not found).
-/// - Returns: The `ResponseData` from the accessibility traversal, containing the elements that will be highlighted.
-public func highlightVisibleElements(pid: Int32, duration: Double = 3.0) throws -> ResponseData {
-    fputs("info: highlightVisibleElements called for PID \(pid), duration \(duration)s.\n", stderr)
+@MainActor // Ensure UI work happens on the main thread
+public func drawHighlightBoxes(for elementsToHighlightInput: [ElementData], duration: Double = 3.0) {
+    fputs("info: drawHighlightBoxes called for \(elementsToHighlightInput.count) elements, duration \(duration)s.\n", stderr)
 
-    // 1. Perform Traversal to get only visible elements
-    // This call is synchronous and might throw an error.
-    fputs("info: Starting accessibility traversal (visible only)...\n", stderr)
-    let response = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: true)
-    fputs("info: Accessibility traversal completed. Found \(response.elements.count) total elements initially.\n", stderr)
-
-    // 2. Filter elements that have geometry needed for highlighting
-    let elementsToHighlight = response.elements.filter {
+    // 1. Filter elements that have geometry needed for highlighting
+    //    (Moved filtering here from the old highlightVisibleElements)
+    let elementsToHighlight = elementsToHighlightInput.filter {
         $0.x != nil && $0.y != nil &&
         $0.width != nil && $0.width! > 0 &&
         $0.height != nil && $0.height! > 0
     }
 
-    // 3. Check if there's anything to highlight
+    // 2. Check if there's anything to highlight
     if elementsToHighlight.isEmpty {
-        fputs("info: No visible elements with valid geometry found to highlight for PID \(pid).\n", stderr)
-        // Still return the response data, even if no highlights will appear.
-        return response
+        fputs("info: No elements with valid geometry provided to highlight.\n", stderr)
+        return // Nothing to do
     }
 
-    fputs("info: Found \(elementsToHighlight.count) visible elements with geometry to highlight.\n", stderr)
+    fputs("info: Filtered down to \(elementsToHighlight.count) elements with valid geometry to highlight.\n", stderr)
 
-    // 4. Dispatch UI work to the main thread asynchronously
-    // This block will execute later on the main thread.
+    // 3. Dispatch UI work to the main thread asynchronously
+    //    (Dispatch logic remains the same)
+    // NOTE: This function is already marked @MainActor, so direct calls are safe,
+    // but DispatchQueue.main.async ensures this specific block queues correctly
+    // relative to other main thread work if called from a non-main async context
+    // that happens to hop to the main actor. Using async explicitly maintains
+    // the non-blocking nature.
     DispatchQueue.main.async { // This block executes on the main actor
         var overlayWindows: [NSWindow] = []
 
-        // Log message moved inside the async block to reflect when window creation actually starts
         fputs("info: [Main Thread] Creating \(elementsToHighlight.count) overlay windows...\n", stderr)
 
-        // Get the main screen height for coordinate conversion
         let screenHeight = NSScreen.main?.frame.height ?? 0
         if screenHeight == 0 {
              fputs("warning: [Main Thread] Could not get main screen height, coordinates might be incorrect.\n", stderr)
@@ -402,43 +417,38 @@ public func highlightVisibleElements(pid: Int32, duration: Double = 3.0) throws 
             fputs("debug: [Main Thread] Main screen height for coordinate conversion: \(screenHeight)\n", stderr)
         }
 
-
         for element in elementsToHighlight {
-            // Extract coordinates and size (safe due to filter above)
             let originalX = element.x!
             let originalY = element.y!
             let elementWidth = element.width!
             let elementHeight = element.height!
-
-            // Convert Y coordinate from top-left (Accessibility) to bottom-left (AppKit)
             let convertedY = screenHeight - originalY - elementHeight
-
-            // Create the frame using the converted Y coordinate
             let frame = NSRect(x: originalX, y: convertedY, width: elementWidth, height: elementHeight)
-
             let textToShow = (element.text?.isEmpty ?? true) ? element.role : element.text!
-            let feedbackType: FeedbackType = .box(text: textToShow) // Use the box type here
+            let feedbackType: FeedbackType = .box(text: textToShow)
 
-            // Create and store the window (requires @MainActor context)
-            let window = createOverlayWindow(frame: frame, type: feedbackType) // createOverlayWindow is @MainActor
+            // Use the @MainActor function safely within this async block
+            let window = createOverlayWindow(frame: frame, type: feedbackType)
             overlayWindows.append(window)
-
-            // Make the window visible (requires @MainActor context)
             window.makeKeyAndOrderFront(nil)
         }
 
         fputs("info: [Main Thread] Displaying \(overlayWindows.count) overlays for \(duration) seconds.\n", stderr)
 
-        // 3. Schedule cleanup on the main thread after the duration
+        // 4. Schedule cleanup on the main thread after the duration
         DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
             fputs("info: [Main Thread] Closing \(overlayWindows.count) overlay windows after \(duration)s duration.\n", stderr)
             for window in overlayWindows {
-                window.close()
+                // Add extra check for visibility before closing, just in case
+                if window.isVisible {
+                    window.close()
+                }
             }
+            fputs("info: [Main Thread] Overlay cleanup task finished.\n", stderr)
         }
     } // End of DispatchQueue.main.async block
 
-    // 5. Return the traversal response immediately after dispatching UI work
-    fputs("info: highlightVisibleElements finished synchronous part, returning traversal data. UI updates dispatched.\n", stderr)
-    return response
+    // 5. Return immediately after dispatching UI work
+    fputs("info: drawHighlightBoxes finished synchronous part, dispatched UI updates.\n", stderr)
+    // No return value needed
 }
