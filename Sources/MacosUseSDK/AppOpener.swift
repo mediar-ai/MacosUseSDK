@@ -33,7 +33,7 @@ public extension MacosUseSDKError {
 }
 
 // Define the structure for the successful result
-public struct AppOpenerResult: Codable {
+public struct AppOpenerResult: Codable, Sendable {
     public let pid: pid_t
     public let appName: String
     public let processingTimeSeconds: String
