@@ -1,7 +1,7 @@
 import Foundation
 import CoreGraphics // For CGPoint, CGEventFlags
 import MacosUseSDK // Import the library
-import AppKit // Required for RunLoop
+import AppKit // Required for RunLoop, NSScreen
 
 // --- Start Time ---
 let startTime = Date() // Record start time for the tool's execution
@@ -70,24 +70,24 @@ let usage = """
 usage: \(scriptName) <action> [options...] [--duration <seconds>]
 
 actions:
-  keypress <key_name_or_code>[+modifier...]   Simulate key press (NO visualization yet).
-  click <x> <y>                 Simulate left click with visualization.
-  doubleclick <x> <y>           Simulate double-click with visualization.
-  rightclick <x> <y>            Simulate right click with visualization.
-  mousemove <x> <y>             Move mouse with visualization at destination.
-  writetext <text_to_type>      Simulate typing text (NO visualization yet).
+  keypress <key_name_or_code>[+modifier...]   Simulate key press AND show caption visualization.
+  click <x> <y>                 Simulate left click AND show circle visualization.
+  doubleclick <x> <y>           Simulate double-click AND show circle visualization.
+  rightclick <x> <y>            Simulate right click AND show circle visualization.
+  mousemove <x> <y>             Move mouse AND show circle visualization at destination.
+  writetext <text_to_type>      Simulate typing text AND show caption visualization.
 
 options:
-  --duration <seconds>          How long the visual effect should last (default: 0.5).
+  --duration <seconds>          How long the visual effect should last (default: 0.5s for mouse, 0.8s for keypress, calculated for writetext).
 
 Examples:
   \(scriptName) click 100 250
   \(scriptName) click 500 500 --duration 1.5
-  \(scriptName) keypress cmd+shift+4
-  \(scriptName) writetext "Hello"
+  \(scriptName) keypress cmd+shift+4 --duration 1.0
+  \(scriptName) writetext "Hello There"
 """
 
-let (action, actionArgs, duration) = parseArguments()
+let (action, actionArgs, parsedDuration) = parseArguments()
 
 guard let action = action else {
     fputs(usage, stderr)
@@ -97,109 +97,168 @@ guard let action = action else {
 // --- Action Handling ---
 var success = false
 var message: String? = nil
-var requiresRunLoopWait = false // Flag if visualization was triggered
+var requiresRunLoopWait = true // Default to true, as all actions now have visualization
 
-do {
-    switch action {
-    case "keypress":
-        guard actionArgs.count == 1 else {
-            throw MacosUseSDKError.inputInvalidArgument("'keypress' requires exactly one argument: <key_name_or_code_with_modifiers>\n\(usage)")
-        }
-        let keyCombo = actionArgs[0]
-        log("Processing key combo: '\(keyCombo)'")
-        // (Parsing logic copied from InputControllerTool)
-        var keyCode: CGKeyCode?
-        var flags: CGEventFlags = []
-        let parts = keyCombo.split(separator: "+").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-        guard let keyPart = parts.last else {
-            throw MacosUseSDKError.inputInvalidArgument("Invalid key combination format: '\(keyCombo)'")
-        }
-        keyCode = MacosUseSDK.mapKeyNameToKeyCode(keyPart)
-        if parts.count > 1 {
-             log("Parsing modifiers: \(parts.dropLast().joined(separator: ", "))")
-            for i in 0..<(parts.count - 1) {
-                switch parts[i] {
-                    case "cmd", "command": flags.insert(.maskCommand)
-                    case "shift": flags.insert(.maskShift)
-                    case "opt", "option", "alt": flags.insert(.maskAlternate)
-                    case "ctrl", "control": flags.insert(.maskControl)
-                    case "fn", "function": flags.insert(.maskSecondaryFn)
-                    default: throw MacosUseSDKError.inputInvalidArgument("Unknown modifier: '\(parts[i])' in '\(keyCombo)'")
+// Variable to hold the actual duration used for visualization
+var visualizationDuration: Double = 0.5 // Default fallback
+
+// Use a Task for the main logic to easily call async/await and @MainActor functions
+Task {
+    do {
+        switch action {
+        case "keypress":
+            guard actionArgs.count == 1 else {
+                throw MacosUseSDKError.inputInvalidArgument("'keypress' requires exactly one argument: <key_name_or_code_with_modifiers>\n\(usage)")
+            }
+            let keyCombo = actionArgs[0]
+            log("Processing key combo: '\(keyCombo)'")
+            // (Parsing logic copied from InputControllerTool)
+            var keyCode: CGKeyCode?
+            var flags: CGEventFlags = []
+            let parts = keyCombo.split(separator: "+").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            guard let keyPart = parts.last else {
+                throw MacosUseSDKError.inputInvalidArgument("Invalid key combination format: '\(keyCombo)'")
+            }
+            keyCode = MacosUseSDK.mapKeyNameToKeyCode(keyPart)
+            if parts.count > 1 {
+                log("Parsing modifiers: \(parts.dropLast().joined(separator: ", "))")
+                for i in 0..<(parts.count - 1) {
+                    switch parts[i] {
+                        case "cmd", "command": flags.insert(.maskCommand)
+                        case "shift": flags.insert(.maskShift)
+                        case "opt", "option", "alt": flags.insert(.maskAlternate)
+                        case "ctrl", "control": flags.insert(.maskControl)
+                        case "fn", "function": flags.insert(.maskSecondaryFn)
+                        default: throw MacosUseSDKError.inputInvalidArgument("Unknown modifier: '\(parts[i])' in '\(keyCombo)'")
+                    }
                 }
             }
-        }
-        guard let finalKeyCode = keyCode else {
-            throw MacosUseSDKError.inputInvalidArgument("Unknown key name or invalid key code: '\(keyPart)' in '\(keyCombo)'")
+            guard let finalKeyCode = keyCode else {
+                throw MacosUseSDKError.inputInvalidArgument("Unknown key name or invalid key code: '\(keyPart)' in '\(keyCombo)'")
+            }
+
+            visualizationDuration = parsedDuration > 0 ? parsedDuration : 0.8 // Use parsed or default 0.8s
+
+            log("Calling pressKey library function...")
+            try MacosUseSDK.pressKey(keyCode: finalKeyCode, flags: flags) // Input simulation
+
+            log("Dispatching showVisualFeedback for keypress...")
+            // Dispatch visualization separately (@MainActor is handled by showVisualFeedback)
+            let captionText = "[KEY PRESS]"
+            let captionSize = CGSize(width: 250, height: 80)
+            if let screenCenter = MacosUseSDK.getMainScreenCenter() {
+                MacosUseSDK.showVisualFeedback(
+                    at: screenCenter,
+                    type: .caption(text: captionText),
+                    size: captionSize,
+                    duration: visualizationDuration
+                )
+            } else {
+                fputs("warning: could not get screen center for key press caption.\n", stderr)
+                requiresRunLoopWait = false // Don't wait if viz failed
+            }
+
+            success = true
+            message = "Key press '\(keyCombo)' simulated with visualization."
+
+        case "click", "doubleclick", "rightclick", "mousemove":
+            guard actionArgs.count == 2 else {
+                throw MacosUseSDKError.inputInvalidArgument("'\(action)' requires exactly two arguments: <x> <y>\n\(usage)")
+            }
+            guard let x = Double(actionArgs[0]), let y = Double(actionArgs[1]) else {
+                throw MacosUseSDKError.inputInvalidArgument("Invalid coordinates for '\(action)'. x and y must be numbers.")
+            }
+            let point = CGPoint(x: x, y: y)
+            log("Coordinates: (\(x), \(y))")
+
+            visualizationDuration = parsedDuration > 0 ? parsedDuration : 0.5 // Use parsed or default 0.5s
+
+            log("Calling \(action) library function...") // Now refers to the input-only function
+            switch action {
+                case "click":       try MacosUseSDK.clickMouse(at: point)
+                case "doubleclick": try MacosUseSDK.doubleClickMouse(at: point)
+                case "rightclick":  try MacosUseSDK.rightClickMouse(at: point)
+                case "mousemove":   try MacosUseSDK.moveMouse(to: point)
+                default: break // Should not happen
+            }
+
+            log("Dispatching showVisualFeedback for \(action)...")
+            // Dispatch visualization separately
+            MacosUseSDK.showVisualFeedback(at: point, type: .circle, duration: visualizationDuration)
+
+            success = true
+            message = "\(action) simulated at (\(x), \(y)) with visualization."
+
+
+        case "writetext":
+            guard actionArgs.count == 1 else {
+                throw MacosUseSDKError.inputInvalidArgument("'writetext' requires exactly one argument: <text_to_type>\n\(usage)")
+            }
+            let text = actionArgs[0]
+            log("Text Argument: \"\(text)\"")
+
+            // Calculate duration if not specified
+            let defaultDuration = 1.0
+            let calculatedDuration = max(defaultDuration, 0.5 + Double(text.count) * 0.05)
+            visualizationDuration = parsedDuration > 0 ? parsedDuration : calculatedDuration // Use parsed or calculated
+
+            log("Calling writeText library function...")
+            try MacosUseSDK.writeText(text) // Input simulation
+
+            log("Dispatching showVisualFeedback for writetext...")
+            // Dispatch visualization separately
+            let captionSize = CGSize(width: 450, height: 100)
+            if let screenCenter = MacosUseSDK.getMainScreenCenter() {
+                MacosUseSDK.showVisualFeedback(
+                    at: screenCenter,
+                    type: .caption(text: text), // Show actual text
+                    size: captionSize,
+                    duration: visualizationDuration
+                )
+            } else {
+                fputs("warning: could not get screen center for write text caption.\n", stderr)
+                requiresRunLoopWait = false // Don't wait if viz failed
+            }
+
+            success = true
+            message = "Text writing simulated with visualization."
+
+        default:
+            fputs(usage, stderr)
+            throw MacosUseSDKError.inputInvalidArgument("Unknown action '\(action)'")
         }
 
-        log("Calling pressKeyAndVisualize library function...")
-        try MacosUseSDK.pressKeyAndVisualize(keyCode: finalKeyCode, flags: flags, duration: duration)
-        // No visualization yet, so no RunLoop wait needed for this action
-        success = true
-        message = "Key press '\(keyCombo)' simulated (no visualization)."
+        // --- Log final status before potentially waiting ---
+        finish(success: success, message: message)
 
-    case "click", "doubleclick", "rightclick", "mousemove":
-        guard actionArgs.count == 2 else {
-             throw MacosUseSDKError.inputInvalidArgument("'\(action)' requires exactly two arguments: <x> <y>\n\(usage)")
+        // --- Keep Main Thread Alive for Visualization (if needed) ---
+        if requiresRunLoopWait {
+            let waitTime = visualizationDuration + 0.5 // Wait slightly longer
+            log("Waiting for \(waitTime) seconds for visualization to complete...")
+            // Use RunLoop directly since we are in a Task that might not be on the main thread initially
+            DispatchQueue.main.async {
+                RunLoop.main.run(until: Date(timeIntervalSinceNow: waitTime))
+                log("Run loop finished. Exiting.")
+                exit(0) // Exit normally after waiting
+            }
+            // Keep the task alive until the run loop finishes
+            try await Task.sleep(nanoseconds: UInt64((waitTime + 0.1) * 1_000_000_000))
+            // Fallback exit if the run loop mechanism doesn't exit
+            exit(0)
+
+        } else {
+            log("No visualization triggered or viz failed, exiting immediately.")
+            exit(0) // Exit normally without waiting
         }
-        guard let x = Double(actionArgs[0]), let y = Double(actionArgs[1]) else {
-            throw MacosUseSDKError.inputInvalidArgument("Invalid coordinates for '\(action)'. x and y must be numbers.")
-        }
-        let point = CGPoint(x: x, y: y)
-        log("Coordinates: (\(x), \(y))")
 
-        log("Calling \(action)AndVisualize library function...")
-        switch action {
-            case "click":       try MacosUseSDK.clickMouseAndVisualize(at: point, duration: duration)
-            case "doubleclick": try MacosUseSDK.doubleClickMouseAndVisualize(at: point, duration: duration)
-            case "rightclick":  try MacosUseSDK.rightClickMouseAndVisualize(at: point, duration: duration)
-            case "mousemove":   try MacosUseSDK.moveMouseAndVisualize(to: point, duration: duration)
-            default: break // Should not happen
-        }
-        requiresRunLoopWait = true // Visualization was triggered
-        success = true
-        message = "\(action) simulated at (\(x), \(y)) with visualization."
-
-
-    case "writetext":
-         guard actionArgs.count == 1 else {
-            throw MacosUseSDKError.inputInvalidArgument("'writetext' requires exactly one argument: <text_to_type>\n\(usage)")
-        }
-        let text = actionArgs[0]
-        log("Text Argument: \"\(text)\"")
-        log("Calling writeTextAndVisualize library function...")
-        try MacosUseSDK.writeTextAndVisualize(text, duration: duration)
-        // No visualization yet, so no RunLoop wait needed for this action
-        success = true
-        message = "Text writing simulated (no visualization)."
-
-    default:
-        fputs(usage, stderr)
-        throw MacosUseSDKError.inputInvalidArgument("Unknown action '\(action)'")
+    } catch let error as MacosUseSDKError {
+        finish(success: false, message: "MacosUseSDK Error: \(error.localizedDescription)")
+        exit(1) // Exit with error
+    } catch {
+        finish(success: false, message: "An unexpected error occurred: \(error.localizedDescription)")
+        exit(1) // Exit with error
     }
-
-    // --- Log final status before potentially waiting ---
-    finish(success: success, message: message)
-
-    // --- Keep Main Thread Alive for Visualization (if needed) ---
-    if requiresRunLoopWait {
-        let waitTime = duration + 0.5 // Wait slightly longer than the effect duration
-        log("Waiting for \(waitTime) seconds for visualization to complete...")
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: waitTime))
-        log("Run loop finished. Exiting.")
-        exit(0) // Exit normally after waiting
-    } else {
-        log("No visualization triggered, exiting immediately.")
-        exit(0) // Exit normally without waiting
-    }
-
-} catch let error as MacosUseSDKError {
-    finish(success: false, message: "MacosUseSDK Error: \(error.localizedDescription)")
-    exit(1) // Exit with error
-} catch {
-     finish(success: false, message: "An unexpected error occurred: \(error.localizedDescription)")
-     exit(1) // Exit with error
 }
 
-// Should not be reached
-exit(1)
+// Keep the main thread running to allow the Task to execute
+RunLoop.main.run()
