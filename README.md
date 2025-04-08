@@ -116,15 +116,12 @@ Run only specific tests or test classes, use the --filter option.
 Run a specific test method: Provide the full identifier TestClassName/testMethodName
 
 ```bash
+swift test
 # Example: Run only the multiply test in CombinedActionsDiffTests
 swift test --filter CombinedActionsDiffTests/testCalculatorMultiplyWithActionAndTraversalHighlight
 # Example: Run all tests in CombinedActionsFocusVisualizationTests
 swift test --filter CombinedActionsFocusVisualizationTests
 ```
-
-
-
-*Note: on Test Output: When running tests you might occasionally see errors or signals in the console output (e.g., error: Exited with unexpected signal code 11). These are often related to the timing of animations and do not impact execution itself
 
 
 ## Using the Library
