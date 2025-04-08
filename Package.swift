@@ -28,6 +28,9 @@ let package = Package(
         .executable(
             name: "AppOpenerTool",
             targets: ["AppOpenerTool"]),
+        .executable(
+            name: "ActionTool",
+            targets: ["ActionTool"]),
     ],
     dependencies: [
         // Add any external package dependencies here later if needed
@@ -63,6 +66,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "AppOpenerTool",
+            dependencies: ["MacosUseSDK"]
+        ),
+        .executableTarget(
+            name: "ActionTool",
             dependencies: ["MacosUseSDK"]
         ),
         .testTarget(
