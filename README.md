@@ -5,8 +5,10 @@ Library and command-line tools to traverse the macOS accessibility tree and simu
 
 https://github.com/user-attachments/assets/d8dc75ba-5b15-492c-bb40-d2bc5b65483e
 
+Animate whatever agent is doing on the computer: text elements, clicks, typing
 ![Image](https://github.com/user-attachments/assets/9e182bbc-bd30-4285-984a-207a58b32bc0)
 
+Listen to changes in the UI, elements changed, text changed
 ![Image](https://github.com/user-attachments/assets/4a972dfa-ce4d-4b1a-9781-43379375b313)
 
 ## Building the Tools
