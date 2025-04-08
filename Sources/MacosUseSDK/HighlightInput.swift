@@ -153,23 +153,5 @@ public func writeTextAndVisualize(_ text: String, duration: Double? = nil) throw
 }
 
 // --- Helper Function to Get Main Screen Center ---
-/// Gets the center point of the main screen.
-/// - Returns: CGPoint of the center in screen coordinates, or nil if main screen not found.
-fileprivate func getMainScreenCenter() -> CGPoint? {
-    guard let mainScreen = NSScreen.main else {
-        fputs("error: could not get main screen.\n", stderr)
-        return nil
-    }
-    let screenRect = mainScreen.frame
-    let centerX = screenRect.midX
-    // IMPORTANT: Accessibility coordinates (like AXPosition) often use top-left origin,
-    // while visual feedback functions might expect bottom-left or need conversion.
-    // However, for screen center, midX/midY in the screen's own frame *should* be correct
-    // for placing the visual feedback relative to the screen itself, assuming
-    // showVisualFeedback handles the screen coordinate system correctly (which it should if using NSWindow).
-    // If the feedback appears offset, we might need to adjust centerY calculation.
-    let centerY = screenRect.midY
-    let centerPoint = CGPoint(x: centerX, y: centerY)
-    // fputs("debug: calculated main screen center: \(centerPoint) from rect \(screenRect)\n", stderr)
-    return centerPoint
-}
+// REMOVED: Entire fileprivate getMainScreenCenter() function definition.
+// The internal version in DrawVisuals.swift will be used instead.
