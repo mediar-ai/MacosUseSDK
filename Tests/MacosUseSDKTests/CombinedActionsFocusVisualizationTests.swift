@@ -113,8 +113,8 @@ final class CombinedActionsFocusVisualizationTests: XCTestCase {
             temporaryFileURL = nil // Clear the reference
         }
 
-        // Give it time to terminate completely
-        try await Task.sleep(nanoseconds: 300_000_000) // 0.3 seconds (adjusted from 0.5)
+        // Allow time for termination and general settling before next test.
+        try await Task.sleep(nanoseconds: 300_000_000) // 0.3 seconds
         textEditApp = nil
         textEditPID = nil
         fputs("info: Focus Test Teardown - Finished.\n", stderr)
@@ -153,6 +153,7 @@ final class CombinedActionsFocusVisualizationTests: XCTestCase {
         // You can examine result.diff if needed, but the focus is on the visualization attempt.
 
         // --- Short Wait for Visual Observation ---
+        // Allows time to visually observe the action/highlight animations before teardown.
         fputs("info: Test run - Waiting \(observationDelaySeconds) seconds for visual observation...\n", stderr)
         try await Task.sleep(nanoseconds: UInt64(observationDelaySeconds * 1_000_000_000))
         fputs("info: Test run - Observation wait finished.\n", stderr)

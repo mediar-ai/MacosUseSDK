@@ -28,9 +28,8 @@ final class CombinedActionsDiffTests: XCTestCase {
     override func tearDown() async throws {
         fputs("info: Test teardown - Terminating Calculator (PID: \(calculatorPID ?? -1))...\n", stderr)
         calculatorApp?.terminate()
-        // Give it more time to terminate AND for async UI cleanup (esp. traversal highlights) to hopefully settle
-        fputs("info: Test teardown - Waiting 1.5 seconds for app termination and UI cleanup...\n", stderr) // Log clarity added
-        // Increased delay from 0.5s to 1.5s to allow more time for async window closing operations.
+        // Give it more time to terminate AND allow any remaining async SDK tasks (like animations) to naturally cease.
+        fputs("info: Test teardown - Waiting 1.5 seconds for app termination and UI settling...\n", stderr)
         try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 seconds
         calculatorApp = nil
         calculatorPID = nil
@@ -86,19 +85,18 @@ final class CombinedActionsDiffTests: XCTestCase {
         }
         fputs("info: --- End Diff Results (Highlighted) ---\n", stderr)
 
-        // --- Wait for Traversal Highlighting Cleanup BEFORE Test Ends ---
-        // Wait slightly longer than the traversal highlight duration (2.0s)
-        // to ensure its async cleanup task (closing the 36 overlay windows)
-        // has executed before tearDown terminates the Calculator app.
-        let highlightCompletionWaitSeconds = testTraversalHighlightDuration + 0.2 // Wait 2.2 seconds total
-        fputs("info: Test run - Waiting \(highlightCompletionWaitSeconds) seconds specifically for traversal highlighting cleanup to complete...\n", stderr)
+        // --- Wait for Traversal Highlighting Animations BEFORE Test Ends ---
+        // The SDK no longer explicitly closes highlight windows, relying on OS cleanup.
+        // This wait ensures the highlight *animations* have sufficient time to visually
+        // complete before tearDown terminates the Calculator app. It also provides
+        // a buffer for general UI settling.
+        let highlightCompletionWaitSeconds = testTraversalHighlightDuration + 0.2 // Wait slightly longer than animation
+        fputs("info: Test run - Waiting \(highlightCompletionWaitSeconds) seconds for traversal highlighting animations to complete...\n", stderr)
         try await Task.sleep(nanoseconds: UInt64(highlightCompletionWaitSeconds * 1_000_000_000))
-        fputs("info: Test run - Traversal highlight cleanup wait finished. Proceeding to finish test function.\n", stderr)
+        fputs("info: Test run - Traversal highlight animation wait finished. Proceeding to finish test function.\n", stderr)
         // --- END WAIT ---
 
         fputs("info: === Finished testCalculatorMultiplyWithActionAndTraversalHighlight ===\n", stderr)
-        // Teardown (which terminates the app) runs AFTER this function returns.
-        // The 1.5s delay in tearDown remains as a final safety net.
     }
     // --- END TEST ---
 
