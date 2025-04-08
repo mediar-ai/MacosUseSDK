@@ -1,5 +1,6 @@
 import Foundation // Needed for fputs, etc.
 import CoreGraphics // Needed for CGPoint, CGKeyCode, CGEventFlags
+import AppKit // For AXUIElement related constants potentially used indirectly, MainActor
 
 /// Represents the difference between two accessibility traversals.
 /// Currently focuses on elements added or removed. Detecting modifications
@@ -13,145 +14,546 @@ public struct TraversalDiff: Codable {
 /// Holds the results of an action performed between two accessibility traversals,
 /// including the state before, the state after, and the calculated difference.
 public struct ActionDiffResult: Codable {
+    public let beforeAction: ResponseData
     public let afterAction: ResponseData
     public let diff: TraversalDiff
 }
 
-/// Defines combined, higher-level actions using the SDK's core functionalities.
-public enum CombinedActions {
+/// Result type for `open(...).executeAndTraverse()`.
+public struct OpenAndTraverseResult: Codable {
+    public let openResult: AppOpenerResult
+    public let traversalResult: ResponseData
+}
 
-    /// Opens or activates an application and then immediately traverses its accessibility tree.
-    ///
-    /// This combines the functionality of `openApplication` and `traverseAccessibilityTree`.
-    /// Logs detailed steps to stderr.
-    ///
-    /// - Parameters:
-    ///   - identifier: The application name (e.g., "Calculator"), bundle ID (e.g., "com.apple.calculator"), or full path (e.g., "/System/Applications/Calculator.app").
-    ///   - onlyVisibleElements: If true, the traversal only collects elements with valid position and size. Defaults to false.
-    /// - Returns: A `ResponseData` struct containing the collected elements, statistics, and timing information from the traversal.
-    /// - Throws: `MacosUseSDKError` if either the application opening/activation or the accessibility traversal fails.
-    @MainActor // Ensures UI-related parts like activation happen on the main thread
-    public static func openAndTraverseApp(identifier: String, onlyVisibleElements: Bool = false) async throws -> ResponseData {
-        fputs("info: starting combined action 'openAndTraverseApp' for identifier: '\(identifier)'\n", stderr)
+/// Shared configuration options for action builders.
+internal struct ActionBuilderConfig {
+    var pid: Int32? = nil // PID is often needed, but not always set initially (e.g., for Open)
+    var onlyVisibleElements: Bool = false
+    var visualizeAction: Bool = false
+    var actionVisualizationDuration: Double = 0.5 // Default duration for action pulse
+    var highlightTraversalResults: Bool = false
+    var traversalHighlightDuration: Double = 3.0 // Default duration for highlighting elements
+    var delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
 
-        // Step 1: Open or Activate the Application
-        fputs("info: calling openApplication...\n", stderr)
-        let openResult = try await MacosUseSDK.openApplication(identifier: identifier)
-        fputs("info: openApplication completed successfully. PID: \(openResult.pid), App Name: \(openResult.appName)\n", stderr)
+    // Method to potentially update PID if discovered later (e.g., after open)
+    mutating func updatePID(_ newPID: Int32) {
+        if self.pid == nil {
+            self.pid = newPID
+            fputs("debug: ActionBuilderConfig updated PID to \(newPID)\n", stderr)
+        } else if self.pid != newPID {
+             fputs("warning: ActionBuilderConfig ignoring attempt to overwrite existing PID \(self.pid!) with \(newPID)\n", stderr)
+        }
+    }
+}
 
-        // Step 2: Traverse the Accessibility Tree of the opened/activated application
-        fputs("info: calling traverseAccessibilityTree for PID \(openResult.pid) (Visible Only: \(onlyVisibleElements))...\n", stderr)
-        let traversalResult = try MacosUseSDK.traverseAccessibilityTree(pid: openResult.pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traverseAccessibilityTree completed successfully.\n", stderr)
+// --- Click Action ---
+@MainActor // Builders initiating UI work should be on main actor
+public struct ClickActionBuilder {
+    private let point: CGPoint
+    private var config: ActionBuilderConfig
 
-        // Step 3: Return the traversal result
-        fputs("info: combined action 'openAndTraverseApp' finished.\n", stderr)
+    internal init(point: CGPoint, pid: Int32) {
+        self.point = point
+        self.config = ActionBuilderConfig(pid: pid)
+        fputs("info: ClickActionBuilder initialized for PID \(pid) at (\(point.x), \(point.y))\n", stderr)
+    }
+
+    // --- Configuration Methods ---
+    public func visualizeAction(duration: Double? = nil) -> Self {
+        var newBuilder = self
+        newBuilder.config.visualizeAction = true
+        if let duration = duration {
+            newBuilder.config.actionVisualizationDuration = duration
+        }
+        fputs("debug: ClickActionBuilder configured visualizeAction=true (duration: \(newBuilder.config.actionVisualizationDuration)s)\n", stderr)
+        return newBuilder
+    }
+
+    public func visibleElementsOnly() -> Self {
+        var newBuilder = self
+        newBuilder.config.onlyVisibleElements = true
+        fputs("debug: ClickActionBuilder configured onlyVisibleElements=true\n", stderr)
+        return newBuilder
+    }
+
+    public func highlightResults(duration: Double? = nil) -> Self {
+        var newBuilder = self
+        newBuilder.config.highlightTraversalResults = true
+        if let duration = duration {
+            newBuilder.config.traversalHighlightDuration = duration
+        }
+        fputs("debug: ClickActionBuilder configured highlightResults=true (duration: \(newBuilder.config.traversalHighlightDuration)s)\n", stderr)
+        return newBuilder
+    }
+
+     public func delayAfterAction(nanoseconds: UInt64) -> Self {
+        var newBuilder = self
+        newBuilder.config.delayAfterActionNano = nanoseconds
+        fputs("debug: ClickActionBuilder configured delayAfterActionNano=\(nanoseconds)\n", stderr)
+        return newBuilder
+    }
+
+    // --- Execution Methods ---
+
+    /// Executes the click action only.
+    public func execute() async throws {
+        guard let pid = config.pid else { throw MacosUseSDKError.internalError("PID missing for click execution") } // Should be set by init
+        fputs("info: ClickActionBuilder executing click (visualize: \(config.visualizeAction)) for PID \(pid) at (\(point.x), \(point.y))\n", stderr)
+
+        if config.visualizeAction {
+            try clickMouseAndVisualize(at: point, duration: config.actionVisualizationDuration)
+            // Small delay often needed after visualization dispatch
+            try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+        } else {
+            try clickMouse(at: point)
+        }
+         fputs("info: ClickActionBuilder execute finished.\n", stderr)
+    }
+
+    /// Executes the click action, waits, then performs a traversal.
+    public func executeAndTraverse() async throws -> ResponseData {
+        guard let pid = config.pid else { throw MacosUseSDKError.internalError("PID missing for click+traverse execution") }
+         fputs("info: ClickActionBuilder executing click, then traversing (visualize: \(config.visualizeAction), highlight: \(config.highlightTraversalResults), visibleOnly: \(config.onlyVisibleElements))\n", stderr)
+
+        // 1. Perform Action
+        try await execute() // Use the simple execute method first
+
+        // 2. Wait
+        fputs("info: Waiting \(Double(config.delayAfterActionNano) / 1_000_000_000.0) seconds after click...\n", stderr)
+        try await Task.sleep(nanoseconds: config.delayAfterActionNano)
+
+        // 3. Perform Traversal (potentially with highlight)
+        fputs("info: ClickActionBuilder initiating traversal (highlight: \(config.highlightTraversalResults))...\n", stderr)
+        let traversalResult: ResponseData
+        if config.highlightTraversalResults {
+            // highlightVisibleElements inherently uses onlyVisibleElements=true, matching the name.
+            // If flexibility needed later, highlightVisibleElements might need an 'onlyVisible' param.
+             if !config.onlyVisibleElements {
+                 fputs("warning: highlightResults=true forces visibleElementsOnly=true for highlighting.\n", stderr)
+             }
+            traversalResult = try highlightVisibleElements(pid: pid, duration: config.traversalHighlightDuration)
+        } else {
+            traversalResult = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: config.onlyVisibleElements)
+        }
+        fputs("info: ClickActionBuilder executeAndTraverse finished.\n", stderr)
         return traversalResult
     }
 
-    // --- Input Action followed by Traversal ---
+    /// Executes a traversal, the click action, waits, then performs a second traversal and returns the diff.
+    public func executeAndDiff() async throws -> ActionDiffResult {
+         guard let pid = config.pid else { throw MacosUseSDKError.internalError("PID missing for click+diff execution") }
+         fputs("info: ClickActionBuilder executing diff (visualize: \(config.visualizeAction), highlightAfter: \(config.highlightTraversalResults), visibleOnly: \(config.onlyVisibleElements))\n", stderr)
 
-    /// Simulates a left mouse click at the specified coordinates, then traverses the accessibility tree of the target application.
-    ///
-    /// - Parameters:
-    ///   - point: The `CGPoint` where the click should occur (screen coordinates).
-    ///   - pid: The Process ID (PID) of the application to traverse after the click.
-    ///   - onlyVisibleElements: If true, the traversal only collects elements with valid position and size. Defaults to false.
-    /// - Returns: A `ResponseData` struct containing the collected elements, statistics, and timing information from the traversal.
-    /// - Throws: `MacosUseSDKError` if the click simulation or the accessibility traversal fails.
-    @MainActor // Added for consistency, although core CGEvent might not strictly require it
-    public static func clickAndTraverseApp(point: CGPoint, pid: Int32, onlyVisibleElements: Bool = false) async throws -> ResponseData {
-        fputs("info: starting combined action 'clickAndTraverseApp' at (\(point.x), \(point.y)) for PID \(pid)\n", stderr)
+        // 1. Traverse Before
+        fputs("info: ClickActionBuilder traversing before action...\n", stderr)
+        let beforeTraversal = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: config.onlyVisibleElements)
+        fputs("info: ClickActionBuilder traversal before completed.\n", stderr)
 
-        // Step 1: Perform the click
-        fputs("info: calling clickMouse...\n", stderr)
-        try MacosUseSDK.clickMouse(at: point)
-        fputs("info: clickMouse completed successfully.\n", stderr)
+        // 2. Perform Action
+        try await execute() // Use the simple execute method
 
-        // Add a small delay to allow UI to potentially update after the click
-        try await Task.sleep(nanoseconds: 100_000_000) // 100 milliseconds
+        // 3. Wait
+        fputs("info: Waiting \(Double(config.delayAfterActionNano) / 1_000_000_000.0) seconds after click...\n", stderr)
+        try await Task.sleep(nanoseconds: config.delayAfterActionNano)
 
-        // Step 2: Traverse the Accessibility Tree
-        fputs("info: calling traverseAccessibilityTree for PID \(pid) (Visible Only: \(onlyVisibleElements))...\n", stderr)
-        let traversalResult = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traverseAccessibilityTree completed successfully.\n", stderr)
+        // 4. Traverse After (potentially with highlight)
+        fputs("info: ClickActionBuilder initiating traversal after action (highlight: \(config.highlightTraversalResults))...\n", stderr)
+        let afterTraversal: ResponseData
+        if config.highlightTraversalResults {
+             if !config.onlyVisibleElements {
+                 fputs("warning: highlightResults=true forces visibleElementsOnly=true for highlighting.\n", stderr)
+             }
+            afterTraversal = try highlightVisibleElements(pid: pid, duration: config.traversalHighlightDuration)
+        } else {
+            afterTraversal = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: config.onlyVisibleElements)
+        }
+        fputs("info: ClickActionBuilder traversal after completed.\n", stderr)
 
-        // Step 3: Return the traversal result
-        fputs("info: combined action 'clickAndTraverseApp' finished.\n", stderr)
+        // 5. Calculate Diff
+        fputs("info: ClickActionBuilder calculating diff...\n", stderr)
+        let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversal.elements)
+        fputs("info: ClickActionBuilder diff calculation finished.\n", stderr)
+
+        // 6. Return Result
+        let result = ActionDiffResult(
+            beforeAction: beforeTraversal, // Include before state
+            afterAction: afterTraversal,
+            diff: diff
+        )
+        fputs("info: ClickActionBuilder executeAndDiff finished.\n", stderr)
+        return result
+    }
+}
+
+// --- Type Action Builder (Similar Structure) ---
+@MainActor
+public struct TypeActionBuilder {
+    private let text: String
+    private var config: ActionBuilderConfig
+
+    internal init(text: String, pid: Int32) {
+        self.text = text
+        self.config = ActionBuilderConfig(pid: pid)
+        fputs("info: TypeActionBuilder initialized for PID \(pid) with text \"\(text)\"\n", stderr)
+    }
+
+    // --- Configuration Methods (visualize, visibleOnly, highlight, delay) ---
+    // Example:
+    public func visualizeAction(duration: Double? = nil) -> Self {
+        var newBuilder = self
+        newBuilder.config.visualizeAction = true
+        if let duration = duration {
+            newBuilder.config.actionVisualizationDuration = duration
+        }
+         fputs("debug: TypeActionBuilder configured visualizeAction=true (duration: \(newBuilder.config.actionVisualizationDuration)s)\n", stderr)
+        // Currently writeTextAndVisualize has no visual effect, but we keep the option
+        return newBuilder
+    }
+     public func visibleElementsOnly() -> Self {
+        var newBuilder = self
+        newBuilder.config.onlyVisibleElements = true
+        fputs("debug: TypeActionBuilder configured onlyVisibleElements=true\n", stderr)
+        return newBuilder
+    }
+     public func highlightResults(duration: Double? = nil) -> Self {
+        var newBuilder = self
+        newBuilder.config.highlightTraversalResults = true
+        if let duration = duration {
+            newBuilder.config.traversalHighlightDuration = duration
+        }
+        fputs("debug: TypeActionBuilder configured highlightResults=true (duration: \(newBuilder.config.traversalHighlightDuration)s)\n", stderr)
+        return newBuilder
+    }
+      public func delayAfterAction(nanoseconds: UInt64) -> Self {
+        var newBuilder = self
+        newBuilder.config.delayAfterActionNano = nanoseconds
+        fputs("debug: TypeActionBuilder configured delayAfterActionNano=\(nanoseconds)\n", stderr)
+        return newBuilder
+    }
+    // Add visibleElementsOnly, highlightResults, delayAfterAction...
+
+    // --- Execution Methods ---
+    public func execute() async throws {
+         guard let pid = config.pid else { throw MacosUseSDKError.internalError("PID missing for type execution") }
+         fputs("info: TypeActionBuilder executing type (visualize: \(config.visualizeAction)) for PID \(pid)\n", stderr)
+        if config.visualizeAction {
+            try writeTextAndVisualize(text, duration: config.actionVisualizationDuration) // Visualize call, even if no-op visually
+        } else {
+            try writeText(text)
+        }
+         fputs("info: TypeActionBuilder execute finished.\n", stderr)
+    }
+
+    public func executeAndTraverse() async throws -> ResponseData {
+         guard let pid = config.pid else { throw MacosUseSDKError.internalError("PID missing for type+traverse execution") }
+         fputs("info: TypeActionBuilder executing type, then traversing (visualize: \(config.visualizeAction), highlight: \(config.highlightTraversalResults), visibleOnly: \(config.onlyVisibleElements))\n", stderr)
+        try await execute()
+        fputs("info: Waiting \(Double(config.delayAfterActionNano) / 1_000_000_000.0) seconds after type...\n", stderr)
+        try await Task.sleep(nanoseconds: config.delayAfterActionNano)
+        fputs("info: TypeActionBuilder initiating traversal (highlight: \(config.highlightTraversalResults))...\n", stderr)
+         let traversalResult: ResponseData
+        if config.highlightTraversalResults {
+             if !config.onlyVisibleElements { fputs("warning: highlightResults=true forces visibleElementsOnly=true for highlighting.\n", stderr) }
+            traversalResult = try highlightVisibleElements(pid: pid, duration: config.traversalHighlightDuration)
+        } else {
+            traversalResult = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: config.onlyVisibleElements)
+        }
+         fputs("info: TypeActionBuilder executeAndTraverse finished.\n", stderr)
         return traversalResult
     }
 
-    /// Simulates pressing a key with optional modifiers, then traverses the accessibility tree of the target application.
-    ///
-    /// - Parameters:
-    ///   - keyCode: The `CGKeyCode` of the key to press.
-    ///   - flags: The modifier flags (`CGEventFlags`) to apply.
-    ///   - pid: The Process ID (PID) of the application to traverse after the key press.
-    ///   - onlyVisibleElements: If true, the traversal only collects elements with valid position and size. Defaults to false.
-    /// - Returns: A `ResponseData` struct containing the collected elements, statistics, and timing information from the traversal.
-    /// - Throws: `MacosUseSDKError` if the key press simulation or the accessibility traversal fails.
+    public func executeAndDiff() async throws -> ActionDiffResult {
+        guard let pid = config.pid else { throw MacosUseSDKError.internalError("PID missing for type+diff execution") }
+        fputs("info: TypeActionBuilder executing diff (visualize: \(config.visualizeAction), highlightAfter: \(config.highlightTraversalResults), visibleOnly: \(config.onlyVisibleElements))\n", stderr)
+        fputs("info: TypeActionBuilder traversing before action...\n", stderr)
+        let beforeTraversal = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: config.onlyVisibleElements)
+        fputs("info: TypeActionBuilder traversal before completed.\n", stderr)
+        try await execute()
+        fputs("info: Waiting \(Double(config.delayAfterActionNano) / 1_000_000_000.0) seconds after type...\n", stderr)
+        try await Task.sleep(nanoseconds: config.delayAfterActionNano)
+        fputs("info: TypeActionBuilder initiating traversal after action (highlight: \(config.highlightTraversalResults))...\n", stderr)
+         let afterTraversal: ResponseData
+         if config.highlightTraversalResults {
+              if !config.onlyVisibleElements { fputs("warning: highlightResults=true forces visibleElementsOnly=true for highlighting.\n", stderr) }
+             afterTraversal = try highlightVisibleElements(pid: pid, duration: config.traversalHighlightDuration)
+         } else {
+             afterTraversal = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: config.onlyVisibleElements)
+         }
+         fputs("info: TypeActionBuilder traversal after completed.\n", stderr)
+         fputs("info: TypeActionBuilder calculating diff...\n", stderr)
+        let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversal.elements)
+        fputs("info: TypeActionBuilder diff calculation finished.\n", stderr)
+        let result = ActionDiffResult(beforeAction: beforeTraversal, afterAction: afterTraversal, diff: diff)
+        fputs("info: TypeActionBuilder executeAndDiff finished.\n", stderr)
+        return result
+    }
+}
+
+// --- PressKey Action Builder (Similar Structure) ---
     @MainActor
-    public static func pressKeyAndTraverseApp(keyCode: CGKeyCode, flags: CGEventFlags = [], pid: Int32, onlyVisibleElements: Bool = false) async throws -> ResponseData {
-         fputs("info: starting combined action 'pressKeyAndTraverseApp' (key: \(keyCode), flags: \(flags.rawValue)) for PID \(pid)\n", stderr)
+public struct PressKeyActionBuilder {
+    private let keyCode: CGKeyCode
+    private let flags: CGEventFlags
+    private var config: ActionBuilderConfig
 
-         // Step 1: Perform the key press
-         fputs("info: calling pressKey...\n", stderr)
-         try MacosUseSDK.pressKey(keyCode: keyCode, flags: flags)
-         fputs("info: pressKey completed successfully.\n", stderr)
+     internal init(keyCode: CGKeyCode, flags: CGEventFlags = [], pid: Int32) {
+        self.keyCode = keyCode
+        self.flags = flags
+        self.config = ActionBuilderConfig(pid: pid)
+        fputs("info: PressKeyActionBuilder initialized for PID \(pid) (key: \(keyCode), flags: \(flags.rawValue))\n", stderr)
+    }
 
-         // Add a small delay
-         try await Task.sleep(nanoseconds: 100_000_000) // 100 milliseconds
+    // --- Configuration Methods (visualize, visibleOnly, highlight, delay) ---
+     public func visualizeAction(duration: Double? = nil) -> Self {
+        var newBuilder = self
+        newBuilder.config.visualizeAction = true
+        if let duration = duration {
+            newBuilder.config.actionVisualizationDuration = duration
+        }
+         fputs("debug: PressKeyActionBuilder configured visualizeAction=true (duration: \(newBuilder.config.actionVisualizationDuration)s)\n", stderr)
+         // Currently pressKeyAndVisualize has no visual effect
+        return newBuilder
+    }
+      public func visibleElementsOnly() -> Self {
+        var newBuilder = self
+        newBuilder.config.onlyVisibleElements = true
+        fputs("debug: PressKeyActionBuilder configured onlyVisibleElements=true\n", stderr)
+        return newBuilder
+    }
+       public func highlightResults(duration: Double? = nil) -> Self {
+        var newBuilder = self
+        newBuilder.config.highlightTraversalResults = true
+        if let duration = duration {
+            newBuilder.config.traversalHighlightDuration = duration
+        }
+        fputs("debug: PressKeyActionBuilder configured highlightResults=true (duration: \(newBuilder.config.traversalHighlightDuration)s)\n", stderr)
+        return newBuilder
+    }
+        public func delayAfterAction(nanoseconds: UInt64) -> Self {
+        var newBuilder = self
+        newBuilder.config.delayAfterActionNano = nanoseconds
+        fputs("debug: PressKeyActionBuilder configured delayAfterActionNano=\(nanoseconds)\n", stderr)
+        return newBuilder
+    }
+    // ...
 
-         // Step 2: Traverse the Accessibility Tree
-         fputs("info: calling traverseAccessibilityTree for PID \(pid) (Visible Only: \(onlyVisibleElements))...\n", stderr)
-         let traversalResult = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-         fputs("info: traverseAccessibilityTree completed successfully.\n", stderr)
+    // --- Execution Methods (execute, executeAndTraverse, executeAndDiff) ---
+    public func execute() async throws {
+         fputs("info: PressKeyActionBuilder executing pressKey (visualize: \(config.visualizeAction))\n", stderr)
+        if config.visualizeAction {
+            try pressKeyAndVisualize(keyCode: keyCode, flags: flags, duration: config.actionVisualizationDuration)
+        } else {
+            try pressKey(keyCode: keyCode, flags: flags)
+        }
+         fputs("info: PressKeyActionBuilder execute finished.\n", stderr)
+    }
 
-         // Step 3: Return the traversal result
-         fputs("info: combined action 'pressKeyAndTraverseApp' finished.\n", stderr)
+     public func executeAndTraverse() async throws -> ResponseData {
+         guard let pid = config.pid else { throw MacosUseSDKError.internalError("PID missing for pressKey+traverse execution") }
+         fputs("info: PressKeyActionBuilder executing pressKey, then traversing (visualize: \(config.visualizeAction), highlight: \(config.highlightTraversalResults), visibleOnly: \(config.onlyVisibleElements))\n", stderr)
+         try await execute()
+         fputs("info: Waiting \(Double(config.delayAfterActionNano) / 1_000_000_000.0) seconds after pressKey...\n", stderr)
+         try await Task.sleep(nanoseconds: config.delayAfterActionNano)
+         fputs("info: PressKeyActionBuilder initiating traversal (highlight: \(config.highlightTraversalResults))...\n", stderr)
+         let traversalResult: ResponseData
+         if config.highlightTraversalResults {
+              if !config.onlyVisibleElements { fputs("warning: highlightResults=true forces visibleElementsOnly=true for highlighting.\n", stderr) }
+             traversalResult = try highlightVisibleElements(pid: pid, duration: config.traversalHighlightDuration)
+         } else {
+             traversalResult = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: config.onlyVisibleElements)
+         }
+          fputs("info: PressKeyActionBuilder executeAndTraverse finished.\n", stderr)
          return traversalResult
     }
 
-    /// Simulates typing text, then traverses the accessibility tree of the target application.
-    ///
-    /// - Parameters:
-    ///   - text: The `String` to type.
-    ///   - pid: The Process ID (PID) of the application to traverse after typing the text.
-    ///   - onlyVisibleElements: If true, the traversal only collects elements with valid position and size. Defaults to false.
-    /// - Returns: A `ResponseData` struct containing the collected elements, statistics, and timing information from the traversal.
-    /// - Throws: `MacosUseSDKError` if the text writing simulation or the accessibility traversal fails.
-    @MainActor
-    public static func writeTextAndTraverseApp(text: String, pid: Int32, onlyVisibleElements: Bool = false) async throws -> ResponseData {
-        fputs("info: starting combined action 'writeTextAndTraverseApp' (text: \"\(text)\") for PID \(pid)\n", stderr)
+     public func executeAndDiff() async throws -> ActionDiffResult {
+         guard let pid = config.pid else { throw MacosUseSDKError.internalError("PID missing for pressKey+diff execution") }
+         fputs("info: PressKeyActionBuilder executing diff (visualize: \(config.visualizeAction), highlightAfter: \(config.highlightTraversalResults), visibleOnly: \(config.onlyVisibleElements))\n", stderr)
+         fputs("info: PressKeyActionBuilder traversing before action...\n", stderr)
+         let beforeTraversal = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: config.onlyVisibleElements)
+         fputs("info: PressKeyActionBuilder traversal before completed.\n", stderr)
+         try await execute()
+         fputs("info: Waiting \(Double(config.delayAfterActionNano) / 1_000_000_000.0) seconds after pressKey...\n", stderr)
+         try await Task.sleep(nanoseconds: config.delayAfterActionNano)
+         fputs("info: PressKeyActionBuilder initiating traversal after action (highlight: \(config.highlightTraversalResults))...\n", stderr)
+          let afterTraversal: ResponseData
+          if config.highlightTraversalResults {
+               if !config.onlyVisibleElements { fputs("warning: highlightResults=true forces visibleElementsOnly=true for highlighting.\n", stderr) }
+              afterTraversal = try highlightVisibleElements(pid: pid, duration: config.traversalHighlightDuration)
+          } else {
+              afterTraversal = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: config.onlyVisibleElements)
+          }
+          fputs("info: PressKeyActionBuilder traversal after completed.\n", stderr)
+          fputs("info: PressKeyActionBuilder calculating diff...\n", stderr)
+         let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversal.elements)
+         fputs("info: PressKeyActionBuilder diff calculation finished.\n", stderr)
+         let result = ActionDiffResult(beforeAction: beforeTraversal, afterAction: afterTraversal, diff: diff)
+         fputs("info: PressKeyActionBuilder executeAndDiff finished.\n", stderr)
+         return result
+    }
+    // ...
+}
 
-        // Step 1: Perform the text writing
-        fputs("info: calling writeText...\n", stderr)
-        try MacosUseSDK.writeText(text)
-        fputs("info: writeText completed successfully.\n", stderr)
+// --- Open Action Builder ---
+@MainActor
+public struct OpenActionBuilder {
+    private let identifier: String
+    private var config: ActionBuilderConfig // PID is initially nil
 
-        // Add a small delay
-        try await Task.sleep(nanoseconds: 100_000_000) // 100 milliseconds
-
-        // Step 2: Traverse the Accessibility Tree
-        fputs("info: calling traverseAccessibilityTree for PID \(pid) (Visible Only: \(onlyVisibleElements))...\n", stderr)
-        let traversalResult = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traverseAccessibilityTree completed successfully.\n", stderr)
-
-        // Step 3: Return the traversal result
-        fputs("info: combined action 'writeTextAndTraverseApp' finished.\n", stderr)
-        return traversalResult
+     internal init(identifier: String) {
+        self.identifier = identifier
+        self.config = ActionBuilderConfig() // PID starts nil
+        fputs("info: OpenActionBuilder initialized for identifier \"\(identifier)\"\n", stderr)
     }
 
-     // You can add similar functions for doubleClick, rightClick, moveMouse etc. if needed
+    // --- Configuration Methods (visibleOnly, highlight, delay) ---
+    // Note: visualizeAction doesn't apply to 'open' itself.
+      public func visibleElementsOnly() -> Self {
+        var newBuilder = self
+        newBuilder.config.onlyVisibleElements = true
+        fputs("debug: OpenActionBuilder configured onlyVisibleElements=true\n", stderr)
+        return newBuilder
+    }
+       public func highlightResults(duration: Double? = nil) -> Self {
+        var newBuilder = self
+        newBuilder.config.highlightTraversalResults = true
+        if let duration = duration {
+            newBuilder.config.traversalHighlightDuration = duration
+        }
+        fputs("debug: OpenActionBuilder configured highlightResults=true (duration: \(newBuilder.config.traversalHighlightDuration)s)\n", stderr)
+        return newBuilder
+    }
+     // Delay doesn't make sense *before* execute, maybe after if needed, but less common for 'open'.
 
-    // --- Helper Function for Diffing ---
+    // --- Execution Methods ---
+    public func execute() async throws -> AppOpenerResult {
+         fputs("info: OpenActionBuilder executing open for \"\(identifier)\"...\n", stderr)
+        let result = try await openApplication(identifier: identifier)
+        // Update config PID *after* opening, in case it's used by subsequent chained methods (though less common for open)
+        // config.updatePID(result.pid) // Modifying self requires mutating func, builder pattern usually returns new instances. Less critical here.
+        fputs("info: OpenActionBuilder execute finished (PID: \(result.pid)).\n", stderr)
+        return result
+    }
+
+    public func executeAndTraverse() async throws -> OpenAndTraverseResult {
+         fputs("info: OpenActionBuilder executing open, then traversing (highlight: \(config.highlightTraversalResults), visibleOnly: \(config.onlyVisibleElements))\n", stderr)
+         // 1. Open App
+        let openResult = try await execute() // Use simple execute first
+        let pid = openResult.pid // Get the PID
+
+        // 2. Wait (Optional small delay after activation)
+        try await Task.sleep(nanoseconds: config.delayAfterActionNano) // Use the standard delay
+
+        // 3. Traverse
+         fputs("info: OpenActionBuilder initiating traversal for PID \(pid) (highlight: \(config.highlightTraversalResults))...\n", stderr)
+         let traversalResult: ResponseData
+         if config.highlightTraversalResults {
+              if !config.onlyVisibleElements { fputs("warning: highlightResults=true forces visibleElementsOnly=true for highlighting.\n", stderr) }
+             traversalResult = try highlightVisibleElements(pid: pid, duration: config.traversalHighlightDuration)
+         } else {
+             traversalResult = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: config.onlyVisibleElements)
+         }
+         fputs("info: OpenActionBuilder traversal finished.\n", stderr)
+
+        // 4. Return Combined Result
+         let combinedResult = OpenAndTraverseResult(openResult: openResult, traversalResult: traversalResult)
+         fputs("info: OpenActionBuilder executeAndTraverse finished.\n", stderr)
+        return combinedResult
+    }
+     // executeAndDiff doesn't make sense for 'open' as there's no state *before* the app is open.
+}
+
+// --- Traverse Action Builder ---
+@MainActor
+public struct TraverseActionBuilder {
+    private var config: ActionBuilderConfig
+
+     internal init(pid: Int32) {
+        self.config = ActionBuilderConfig(pid: pid)
+        fputs("info: TraverseActionBuilder initialized for PID \(pid)\n", stderr)
+    }
+
+    // --- Configuration Methods ---
+      public func visibleElementsOnly() -> Self {
+        var newBuilder = self
+        newBuilder.config.onlyVisibleElements = true
+         fputs("debug: TraverseActionBuilder configured onlyVisibleElements=true\n", stderr)
+        return newBuilder
+    }
+       public func highlightResults(duration: Double? = nil) -> Self {
+        var newBuilder = self
+        newBuilder.config.highlightTraversalResults = true
+        if let duration = duration {
+            newBuilder.config.traversalHighlightDuration = duration
+        }
+        fputs("debug: TraverseActionBuilder configured highlightResults=true (duration: \(newBuilder.config.traversalHighlightDuration)s)\n", stderr)
+        return newBuilder
+    }
+    // No visualizeAction or delayAfterAction for simple traversal
+
+    // --- Execution Method ---
+    public func execute() throws -> ResponseData {
+         guard let pid = config.pid else { throw MacosUseSDKError.internalError("PID missing for traverse execution") }
+         fputs("info: TraverseActionBuilder executing traversal (highlight: \(config.highlightTraversalResults), visibleOnly: \(config.onlyVisibleElements))\n", stderr)
+         let traversalResult: ResponseData
+         if config.highlightTraversalResults {
+              if !config.onlyVisibleElements { fputs("warning: highlightResults=true forces visibleElementsOnly=true for highlighting.\n", stderr) }
+             traversalResult = try highlightVisibleElements(pid: pid, duration: config.traversalHighlightDuration)
+         } else {
+             // NOTE: traverseAccessibilityTree is NOT async, so the `throws` is sufficient
+             traversalResult = try traverseAccessibilityTree(pid: pid, onlyVisibleElements: config.onlyVisibleElements)
+         }
+         fputs("info: TraverseActionBuilder execute finished.\n", stderr)
+         return traversalResult
+    }
+}
+
+// --- Define the Namespace Enum ---
+// This MUST come BEFORE the extension below.
+public enum MacosUseSDK {
+    // This enum exists purely to provide a namespace for the static functions.
+}
+
+// --- Static Entry Points Extension ---
+// Now this extension can find the MacosUseSDK enum defined above.
+public extension MacosUseSDK {
+    /// Initiates a click action builder.
+    @MainActor
+    static func click(at point: CGPoint, pid: Int32) -> ClickActionBuilder {
+        return ClickActionBuilder(point: point, pid: pid)
+    }
+
+    /// Initiates a type action builder.
+    @MainActor
+    static func type(_ text: String, pid: Int32) -> TypeActionBuilder {
+        return TypeActionBuilder(text: text, pid: pid)
+    }
+
+    /// Initiates a key press action builder.
+    @MainActor
+    static func pressKey(keyCode: CGKeyCode, flags: CGEventFlags = [], pid: Int32) -> PressKeyActionBuilder {
+        return PressKeyActionBuilder(keyCode: keyCode, flags: flags, pid: pid)
+    }
+
+    /// Initiates an application open/activate action builder.
+    @MainActor
+    static func open(_ identifier: String) -> OpenActionBuilder {
+        return OpenActionBuilder(identifier: identifier)
+    }
+
+    /// Initiates an accessibility traversal action builder.
+    @MainActor
+    static func traverse(pid: Int32) -> TraverseActionBuilder {
+        return TraverseActionBuilder(pid: pid)
+    }
+}
 
     /// Calculates the difference between two sets of ElementData based on set operations.
     /// - Parameters:
     ///   - beforeElements: The list of elements from the first traversal.
     ///   - afterElements: The list of elements from the second traversal.
     /// - Returns: A `TraversalDiff` struct containing added and removed elements.
-    private static func calculateDiff(beforeElements: [ElementData], afterElements: [ElementData]) -> TraversalDiff {
+fileprivate func calculateDiff(beforeElements: [ElementData], afterElements: [ElementData]) -> TraversalDiff {
         fputs("debug: calculating diff between \(beforeElements.count) (before) and \(afterElements.count) (after) elements.\n", stderr)
         // Convert arrays to Sets for efficient comparison. Relies on ElementData being Hashable.
         let beforeSet = Set(beforeElements)
@@ -174,7 +576,7 @@ public enum CombinedActions {
     }
 
     // Helper sorting predicate (consistent with AccessibilityTraversalOperation)
-    private static var elementSortPredicate: (ElementData, ElementData) -> Bool {
+fileprivate var elementSortPredicate: (ElementData, ElementData) -> Bool {
         return { e1, e2 in
             let y1 = e1.y ?? Double.greatestFiniteMagnitude
             let y2 = e2.y ?? Double.greatestFiniteMagnitude
@@ -183,344 +585,4 @@ public enum CombinedActions {
             let x2 = e2.x ?? Double.greatestFiniteMagnitude
             return x1 < x2
         }
-    }
-
-
-    // --- Combined Actions with Diffing ---
-
-    /// Performs a left mouse click, bracketed by accessibility traversals, and returns the diff.
-    ///
-    /// - Parameters:
-    ///   - point: The `CGPoint` where the click should occur (screen coordinates).
-    ///   - pid: The Process ID (PID) of the application to traverse.
-    ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Defaults to false.
-    ///   - delayAfterActionNano: Nanoseconds to wait after the action before the second traversal. Default 100ms.
-    /// - Returns: An `ActionDiffResult` containing traversals before/after the click and the diff.
-    /// - Throws: `MacosUseSDKError` if any step (traversal, click) fails.
-    @MainActor
-    public static func clickWithDiff(
-        point: CGPoint,
-        pid: Int32,
-        onlyVisibleElements: Bool = false,
-        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
-    ) async throws -> ActionDiffResult {
-        fputs("info: starting combined action 'clickWithDiff' at (\(point.x), \(point.y)) for PID \(pid)\n", stderr)
-
-        // Step 1: Traverse Before Action
-        fputs("info: calling traverseAccessibilityTree (before action)...\n", stderr)
-        let beforeTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traversal (before action) completed.\n", stderr)
-
-        // Step 2: Perform the Click
-        fputs("info: calling clickMouse...\n", stderr)
-        try MacosUseSDK.clickMouse(at: point)
-        fputs("info: clickMouse completed successfully.\n", stderr)
-
-        // Step 3: Wait for UI to Update
-        fputs("info: waiting \(Double(delayAfterActionNano) / 1_000_000_000.0) seconds after action...\n", stderr)
-        try await Task.sleep(nanoseconds: delayAfterActionNano)
-
-        // Step 4: Traverse After Action
-        fputs("info: calling traverseAccessibilityTree (after action)...\n", stderr)
-        let afterTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traversal (after action) completed.\n", stderr)
-
-        // Step 5: Calculate Diff
-        fputs("info: calculating traversal diff...\n", stderr)
-        let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversal.elements)
-        fputs("info: diff calculation completed.\n", stderr)
-
-        // Step 6: Prepare and Return Result
-        let result = ActionDiffResult(
-            afterAction: afterTraversal,
-            diff: diff
-        )
-        fputs("info: combined action 'clickWithDiff' finished.\n", stderr)
-        return result
-    }
-
-    /// Presses a key, bracketed by accessibility traversals, and returns the diff.
-    ///
-    /// - Parameters:
-    ///   - keyCode: The `CGKeyCode` of the key to press.
-    ///   - flags: The modifier flags (`CGEventFlags`).
-    ///   - pid: The Process ID (PID) of the application to traverse.
-    ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Defaults to false.
-    ///   - delayAfterActionNano: Nanoseconds to wait after the action before the second traversal. Default 100ms.
-    /// - Returns: An `ActionDiffResult` containing traversals before/after the key press and the diff.
-    /// - Throws: `MacosUseSDKError` if any step fails.
-    @MainActor
-    public static func pressKeyWithDiff(
-        keyCode: CGKeyCode,
-        flags: CGEventFlags = [],
-        pid: Int32,
-        onlyVisibleElements: Bool = false,
-        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
-    ) async throws -> ActionDiffResult {
-         fputs("info: starting combined action 'pressKeyWithDiff' (key: \(keyCode), flags: \(flags.rawValue)) for PID \(pid)\n", stderr)
-
-        // Step 1: Traverse Before Action
-        fputs("info: calling traverseAccessibilityTree (before action)...\n", stderr)
-        let beforeTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traversal (before action) completed.\n", stderr)
-
-        // Step 2: Perform the Key Press
-        fputs("info: calling pressKey...\n", stderr)
-        try MacosUseSDK.pressKey(keyCode: keyCode, flags: flags)
-        fputs("info: pressKey completed successfully.\n", stderr)
-
-        // Step 3: Wait for UI to Update
-        fputs("info: waiting \(Double(delayAfterActionNano) / 1_000_000_000.0) seconds after action...\n", stderr)
-        try await Task.sleep(nanoseconds: delayAfterActionNano)
-
-        // Step 4: Traverse After Action
-        fputs("info: calling traverseAccessibilityTree (after action)...\n", stderr)
-        let afterTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traversal (after action) completed.\n", stderr)
-
-        // Step 5: Calculate Diff
-        fputs("info: calculating traversal diff...\n", stderr)
-        let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversal.elements)
-        fputs("info: diff calculation completed.\n", stderr)
-
-        // Step 6: Prepare and Return Result
-        let result = ActionDiffResult(
-            afterAction: afterTraversal,
-            diff: diff
-        )
-         fputs("info: combined action 'pressKeyWithDiff' finished.\n", stderr)
-        return result
-    }
-
-    /// Types text, bracketed by accessibility traversals, and returns the diff.
-    ///
-    /// - Parameters:
-    ///   - text: The `String` to type.
-    ///   - pid: The Process ID (PID) of the application to traverse.
-    ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Defaults to false.
-    ///   - delayAfterActionNano: Nanoseconds to wait after the action before the second traversal. Default 100ms.
-    /// - Returns: An `ActionDiffResult` containing traversals before/after typing and the diff.
-    /// - Throws: `MacosUseSDKError` if any step fails.
-    @MainActor
-    public static func writeTextWithDiff(
-        text: String,
-        pid: Int32,
-        onlyVisibleElements: Bool = false,
-        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
-    ) async throws -> ActionDiffResult {
-         fputs("info: starting combined action 'writeTextWithDiff' (text: \"\(text)\") for PID \(pid)\n", stderr)
-
-        // Step 1: Traverse Before Action
-        fputs("info: calling traverseAccessibilityTree (before action)...\n", stderr)
-        let beforeTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traversal (before action) completed.\n", stderr)
-
-        // Step 2: Perform the Text Writing
-        fputs("info: calling writeText...\n", stderr)
-        try MacosUseSDK.writeText(text)
-        fputs("info: writeText completed successfully.\n", stderr)
-
-        // Step 3: Wait for UI to Update
-        fputs("info: waiting \(Double(delayAfterActionNano) / 1_000_000_000.0) seconds after action...\n", stderr)
-        try await Task.sleep(nanoseconds: delayAfterActionNano)
-
-        // Step 4: Traverse After Action
-        fputs("info: calling traverseAccessibilityTree (after action)...\n", stderr)
-        let afterTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traversal (after action) completed.\n", stderr)
-
-        // Step 5: Calculate Diff
-        fputs("info: calculating traversal diff...\n", stderr)
-        let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversal.elements)
-        fputs("info: diff calculation completed.\n", stderr)
-
-        // Step 6: Prepare and Return Result
-        let result = ActionDiffResult(
-            afterAction: afterTraversal,
-            diff: diff
-        )
-         fputs("info: combined action 'writeTextWithDiff' finished.\n", stderr)
-        return result
-    }
-
-     // Add similar '...WithDiff' functions for doubleClick, rightClick, etc. as needed
-
-
-    // --- NEW: Combined Actions with Action Visualization AND Traversal Highlighting ---
-
-    /// Performs a left click with visual feedback, bracketed by traversals (before action, after action with highlighting), and returns the diff.
-    ///
-    /// - Parameters:
-    ///   - point: The `CGPoint` where the click should occur.
-    ///   - pid: The Process ID (PID) of the application.
-    ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Default false.
-    ///   - actionHighlightDuration: Duration (seconds) for the click's visual feedback pulse. Default 0.5s.
-    ///   - traversalHighlightDuration: Duration (seconds) for highlighting all elements found in the second traversal. Default 3.0s.
-    ///   - delayAfterActionNano: Nanoseconds to wait after the click before the second traversal. Default 100ms.
-    /// - Returns: An `ActionDiffResult` containing the second traversal's data and the diff.
-    /// - Throws: `MacosUseSDKError` if any step fails.
-    @MainActor
-    public static func clickWithActionAndTraversalHighlight(
-        point: CGPoint,
-        pid: Int32,
-        onlyVisibleElements: Bool = false,
-        actionHighlightDuration: Double = 0.5, // Duration for the click pulse
-        traversalHighlightDuration: Double = 3.0, // Duration for highlighting elements
-        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
-    ) async throws -> ActionDiffResult {
-        fputs("info: starting combined action 'clickWithActionAndTraversalHighlight' at (\(point.x), \(point.y)) for PID \(pid)\n", stderr)
-
-        // Step 1: Traverse Before Action
-        fputs("info: calling traverseAccessibilityTree (before action)...\n", stderr)
-        let beforeTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traversal (before action) completed.\n", stderr)
-
-        // Step 2: Perform the Click WITH Visualization
-        fputs("info: calling clickMouseAndVisualize (duration: \(actionHighlightDuration)s)...\n", stderr)
-        // Note: Assuming clickMouseAndVisualize is available globally or via MacosUseSDK namespace
-        try MacosUseSDK.clickMouseAndVisualize(at: point, duration: actionHighlightDuration)
-        fputs("info: clickMouseAndVisualize dispatched successfully.\n", stderr)
-
-        // Step 3: Wait for UI to Update
-        fputs("info: waiting \(Double(delayAfterActionNano) / 1_000_000_000.0) seconds after action...\n", stderr)
-        try await Task.sleep(nanoseconds: delayAfterActionNano)
-
-        // Step 4: Traverse After Action WITH Highlighting
-        // This function performs the traversal AND dispatches the highlighting
-        fputs("info: calling highlightVisibleElements (duration: \(traversalHighlightDuration)s)...\n", stderr)
-        // Note: Assuming highlightVisibleElements is available globally or via MacosUseSDK namespace
-        let afterTraversalHighlightResult = try MacosUseSDK.highlightVisibleElements(pid: pid, duration: traversalHighlightDuration)
-        fputs("info: highlightVisibleElements completed traversal part and dispatched highlighting.\n", stderr)
-
-        // Step 5: Calculate Diff using data from the two traversals
-        fputs("info: calculating traversal diff...\n", stderr)
-        let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversalHighlightResult.elements)
-        fputs("info: diff calculation completed.\n", stderr)
-
-        // Step 6: Prepare and Return Result
-        let result = ActionDiffResult(
-            afterAction: afterTraversalHighlightResult, // Return data from the *second* traversal
-            diff: diff
-        )
-        fputs("info: combined action 'clickWithActionAndTraversalHighlight' finished.\n", stderr)
-        return result
-    }
-
-
-    /// Presses a key with visual feedback (if implemented), bracketed by traversals (before action, after action with highlighting), and returns the diff.
-    ///
-    /// - Parameters:
-    ///   - keyCode: The `CGKeyCode` of the key to press.
-    ///   - flags: The modifier flags (`CGEventFlags`).
-    ///   - pid: The Process ID (PID) of the application.
-    ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Default false.
-    ///   - actionHighlightDuration: Duration (seconds) for the key press visual feedback (currently ignored). Default 0.5s.
-    ///   - traversalHighlightDuration: Duration (seconds) for highlighting all elements found in the second traversal. Default 3.0s.
-    ///   - delayAfterActionNano: Nanoseconds to wait after the key press before the second traversal. Default 100ms.
-    /// - Returns: An `ActionDiffResult` containing the second traversal's data and the diff.
-    /// - Throws: `MacosUseSDKError` if any step fails.
-    @MainActor
-    public static func pressKeyWithActionAndTraversalHighlight(
-        keyCode: CGKeyCode,
-        flags: CGEventFlags = [],
-        pid: Int32,
-        onlyVisibleElements: Bool = false,
-        actionHighlightDuration: Double = 0.5, // Duration for visualization (currently unused by pressKeyAndVisualize)
-        traversalHighlightDuration: Double = 3.0, // Duration for highlighting elements
-        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
-    ) async throws -> ActionDiffResult {
-         fputs("info: starting combined action 'pressKeyWithActionAndTraversalHighlight' (key: \(keyCode), flags: \(flags.rawValue)) for PID \(pid)\n", stderr)
-
-        // Step 1: Traverse Before Action
-        fputs("info: calling traverseAccessibilityTree (before action)...\n", stderr)
-        let beforeTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traversal (before action) completed.\n", stderr)
-
-        // Step 2: Perform the Key Press WITH Visualization (currently no-op for visualization)
-        fputs("info: calling pressKeyAndVisualize (duration: \(actionHighlightDuration)s)...\n", stderr)
-        // Note: Assuming pressKeyAndVisualize is available globally or via MacosUseSDK namespace
-        try MacosUseSDK.pressKeyAndVisualize(keyCode: keyCode, flags: flags, duration: actionHighlightDuration)
-        fputs("info: pressKeyAndVisualize completed successfully (visualization likely skipped).\n", stderr)
-
-        // Step 3: Wait for UI to Update
-        fputs("info: waiting \(Double(delayAfterActionNano) / 1_000_000_000.0) seconds after action...\n", stderr)
-        try await Task.sleep(nanoseconds: delayAfterActionNano)
-
-        // Step 4: Traverse After Action WITH Highlighting
-        fputs("info: calling highlightVisibleElements (duration: \(traversalHighlightDuration)s)...\n", stderr)
-        // Note: Assuming highlightVisibleElements is available globally or via MacosUseSDK namespace
-        let afterTraversalHighlightResult = try MacosUseSDK.highlightVisibleElements(pid: pid, duration: traversalHighlightDuration)
-        fputs("info: highlightVisibleElements completed traversal part and dispatched highlighting.\n", stderr)
-
-        // Step 5: Calculate Diff
-        fputs("info: calculating traversal diff...\n", stderr)
-        let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversalHighlightResult.elements)
-        fputs("info: diff calculation completed.\n", stderr)
-
-        // Step 6: Prepare and Return Result
-        let result = ActionDiffResult(
-            afterAction: afterTraversalHighlightResult,
-            diff: diff
-        )
-         fputs("info: combined action 'pressKeyWithActionAndTraversalHighlight' finished.\n", stderr)
-        return result
-    }
-
-    /// Types text with visual feedback (if implemented), bracketed by traversals (before action, after action with highlighting), and returns the diff.
-    ///
-    /// - Parameters:
-    ///   - text: The `String` to type.
-    ///   - pid: The Process ID (PID) of the application.
-    ///   - onlyVisibleElements: If true, traversals only collect elements with valid position/size. Default false.
-    ///   - actionHighlightDuration: Duration (seconds) for the text input visual feedback (currently ignored). Default 0.5s.
-    ///   - traversalHighlightDuration: Duration (seconds) for highlighting all elements found in the second traversal. Default 3.0s.
-    ///   - delayAfterActionNano: Nanoseconds to wait after typing before the second traversal. Default 100ms.
-    /// - Returns: An `ActionDiffResult` containing the second traversal's data and the diff.
-    /// - Throws: `MacosUseSDKError` if any step fails.
-    @MainActor
-    public static func writeTextWithActionAndTraversalHighlight(
-        text: String,
-        pid: Int32,
-        onlyVisibleElements: Bool = false,
-        actionHighlightDuration: Double = 0.5, // Duration for visualization (currently unused by writeTextAndVisualize)
-        traversalHighlightDuration: Double = 3.0, // Duration for highlighting elements
-        delayAfterActionNano: UInt64 = 100_000_000 // 100 ms default
-    ) async throws -> ActionDiffResult {
-         fputs("info: starting combined action 'writeTextWithActionAndTraversalHighlight' (text: \"\(text)\") for PID \(pid)\n", stderr)
-
-        // Step 1: Traverse Before Action
-        fputs("info: calling traverseAccessibilityTree (before action)...\n", stderr)
-        let beforeTraversal = try MacosUseSDK.traverseAccessibilityTree(pid: pid, onlyVisibleElements: onlyVisibleElements)
-        fputs("info: traversal (before action) completed.\n", stderr)
-
-        // Step 2: Perform the Text Writing WITH Visualization (currently no-op for visualization)
-        fputs("info: calling writeTextAndVisualize (duration: \(actionHighlightDuration)s)...\n", stderr)
-        // Note: Assuming writeTextAndVisualize is available globally or via MacosUseSDK namespace
-        try MacosUseSDK.writeTextAndVisualize(text, duration: actionHighlightDuration)
-        fputs("info: writeTextAndVisualize completed successfully (visualization likely skipped).\n", stderr)
-
-        // Step 3: Wait for UI to Update
-        fputs("info: waiting \(Double(delayAfterActionNano) / 1_000_000_000.0) seconds after action...\n", stderr)
-        try await Task.sleep(nanoseconds: delayAfterActionNano)
-
-        // Step 4: Traverse After Action WITH Highlighting
-        fputs("info: calling highlightVisibleElements (duration: \(traversalHighlightDuration)s)...\n", stderr)
-        // Note: Assuming highlightVisibleElements is available globally or via MacosUseSDK namespace
-        let afterTraversalHighlightResult = try MacosUseSDK.highlightVisibleElements(pid: pid, duration: traversalHighlightDuration)
-        fputs("info: highlightVisibleElements completed traversal part and dispatched highlighting.\n", stderr)
-
-        // Step 5: Calculate Diff
-        fputs("info: calculating traversal diff...\n", stderr)
-        let diff = calculateDiff(beforeElements: beforeTraversal.elements, afterElements: afterTraversalHighlightResult.elements)
-        fputs("info: diff calculation completed.\n", stderr)
-
-        // Step 6: Prepare and Return Result
-        let result = ActionDiffResult(
-            afterAction: afterTraversalHighlightResult,
-            diff: diff
-        )
-         fputs("info: combined action 'writeTextWithActionAndTraversalHighlight' finished.\n", stderr)
-        return result
-    }
-
 }
