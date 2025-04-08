@@ -37,8 +37,9 @@ internal class OverlayView: NSView {
 
     private func drawCircle() {
         // fputs("debug: OverlayView drawing circle\n", stderr)
-        fputs("debug: Setting circle stroke color to green.\n", stderr)
-        NSColor.green.setStroke()
+        // fputs("debug: Setting circle fill color to green.\n", stderr) // Updated log message
+        NSColor.green.setFill() // Set fill color instead of stroke
+
         let center = NSPoint(x: bounds.midX, y: bounds.midY)
         // Ensure the circle fits within the bounds if bounds are smaller than diameter
         let effectiveRadius = min(circleRadius, bounds.width / 2.0, bounds.height / 2.0)
@@ -47,8 +48,8 @@ internal class OverlayView: NSView {
         let circleRect = NSRect(x: center.x - effectiveRadius, y: center.y - effectiveRadius,
                                 width: effectiveRadius * 2, height: effectiveRadius * 2)
         let path = NSBezierPath(ovalIn: circleRect)
-        path.lineWidth = frameLineWidth
-        path.stroke()
+        // path.lineWidth = frameLineWidth // No longer needed for fill
+        path.fill() // Fill the path instead of stroking it
     }
 
     private func drawBox(with displayText: String) {
@@ -242,7 +243,7 @@ public func getMainScreenCenter() -> CGPoint? {
 /// - Parameters:
 ///   - point: The center point (`CGPoint`) in screen coordinates for the visual feedback. For captions, this is usually the screen center.
 ///   - type: The type of feedback to display (`FeedbackType`).
-///   - size: The desired size (width/height) of the overlay window. Defaults work for circle, consider larger for captions.
+///   - size: The desired size (width/height) of the overlay window. Defaults work for circle, consider larger for captions. **NOTE: For `.circle`, this parameter is now ignored and a size is calculated based on animation.**
 ///   - duration: How long the feedback should remain visible, in seconds.
 @MainActor // Ensure this runs on the main thread
 public func showVisualFeedback(at point: CGPoint, type: FeedbackType, size: CGSize = CGSize(width: 30, height: 30), duration: Double = 0.5) {
@@ -255,7 +256,24 @@ public func showVisualFeedback(at point: CGPoint, type: FeedbackType, size: CGSi
         return
     }
 
-    fputs("info: showVisualFeedback called for point \(point), type \(type), size \(size), duration \(duration)s.\n", stderr)
+    // --- Calculate Required Size ---
+    var effectiveSize: CGSize
+    let maxCircleScale: CGFloat = 1.8 // The maximum scale factor from the animation
+    let circleRadius: CGFloat = 15.0 // The base radius defined in OverlayView
+
+    if case .circle = type {
+        // Calculate the needed diameter at max scale and add more padding
+        let maxDiameter = circleRadius * 2.0 * maxCircleScale
+        // Increased padding from 4.0 to 10.0
+        let paddedSize = ceil(maxDiameter + 100.0) // Add padding (e.g., 5 points on each side)
+        effectiveSize = CGSize(width: paddedSize, height: paddedSize)
+        fputs("info: showVisualFeedback using calculated size \(effectiveSize) for .circle type (ignores input size \(size)).\n", stderr)
+    } else {
+        // Use provided or default size for other types (box, caption)
+        effectiveSize = size
+        fputs("info: showVisualFeedback called for point \(point), type \(type), size \(effectiveSize), duration \(duration)s.\n", stderr)
+    }
+
 
     // --- Coordinate Conversion (Using AppKit bottom-left origin) ---
     // Screen height is needed to convert the Y coordinate.
@@ -263,13 +281,14 @@ public func showVisualFeedback(at point: CGPoint, type: FeedbackType, size: CGSi
     if screenHeight == 0 {
         fputs("warning: Could not get main screen height, coordinates might be incorrect.\n", stderr)
     }
-    // Calculate origin based on the center point provided
-    let originX = point.x - (size.width / 2.0)
-    let originY = screenHeight - point.y - (size.height / 2.0) // Convert Y from top-left to bottom-left
-    let frame = NSRect(x: originX, y: originY, width: size.width, height: size.height)
+    // Calculate origin based on the center point provided and the *effective* size
+    let originX = point.x - (effectiveSize.width / 2.0)
+    let originY = screenHeight - point.y - (effectiveSize.height / 2.0) // Convert Y from top-left to bottom-left
+    let frame = NSRect(x: originX, y: originY, width: effectiveSize.width, height: effectiveSize.height)
     fputs("debug: Creating feedback window with AppKit frame: \(frame)\n", stderr)
 
     // --- Create Window ---
+    // Pass the calculated effectiveSize and frame to createOverlayWindow
     let window = createOverlayWindow(frame: frame, type: type)
 
     // --- Make Window Visible ---
@@ -349,19 +368,7 @@ public func showVisualFeedback(at point: CGPoint, type: FeedbackType, size: CGSi
          fputs("warning: Could not get OverlayView from window content for animation.\n", stderr)
     }
 
-
-    // --- Schedule Cleanup ---
-    // Closes the window after the specified duration.
-    DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-        // Check if the window still exists before trying to close it
-        // (Could potentially be closed manually or by other means, though unlikely here)
-        if window.isVisible {
-             fputs("debug: Closing feedback window after \(duration)s duration. Type: \(type)\n", stderr)
-             window.close() // Closing the window removes the layer and stops any running animations implicitly.
-        } else {
-             fputs("debug: Feedback window already closed before cleanup timer fired. Type: \(type)\n", stderr)
-        }
-    }
+    fputs("debug: Visual feedback window displayed. It will remain until the tool exits.\n", stderr)
 }
 
 // --- NEW Public API Function for Drawing Highlight Boxes ---
@@ -399,12 +406,6 @@ public func drawHighlightBoxes(for elementsToHighlightInput: [ElementData], dura
     fputs("info: Filtered down to \(elementsToHighlight.count) elements with valid geometry to highlight.\n", stderr)
 
     // 3. Dispatch UI work to the main thread asynchronously
-    //    (Dispatch logic remains the same)
-    // NOTE: This function is already marked @MainActor, so direct calls are safe,
-    // but DispatchQueue.main.async ensures this specific block queues correctly
-    // relative to other main thread work if called from a non-main async context
-    // that happens to hop to the main actor. Using async explicitly maintains
-    // the non-blocking nature.
     DispatchQueue.main.async { // This block executes on the main actor
         var overlayWindows: [NSWindow] = []
 
@@ -433,19 +434,8 @@ public func drawHighlightBoxes(for elementsToHighlightInput: [ElementData], dura
             window.makeKeyAndOrderFront(nil)
         }
 
-        fputs("info: [Main Thread] Displaying \(overlayWindows.count) overlays for \(duration) seconds.\n", stderr)
+        fputs("info: [Main Thread] Displayed \(overlayWindows.count) overlays. They will remain until the tool exits.\n", stderr)
 
-        // 4. Schedule cleanup on the main thread after the duration
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
-            fputs("info: [Main Thread] Closing \(overlayWindows.count) overlay windows after \(duration)s duration.\n", stderr)
-            for window in overlayWindows {
-                // Add extra check for visibility before closing, just in case
-                if window.isVisible {
-                    window.close()
-                }
-            }
-            fputs("info: [Main Thread] Overlay cleanup task finished.\n", stderr)
-        }
     } // End of DispatchQueue.main.async block
 
     // 5. Return immediately after dispatching UI work
