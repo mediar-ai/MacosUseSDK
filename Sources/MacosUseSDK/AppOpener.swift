@@ -165,13 +165,16 @@ private class AppOpenerOperation {
         let configuration = NSWorkspace.OpenConfiguration() // Define configuration locally
 
         do {
-            // Await the async call
-            let runningApp = try await workspace.openApplication(at: finalAppURL, configuration: configuration)
-            // Immediately extract the Sendable PID on the main actor after the await completes
-            let pidAfterOpen = runningApp.processIdentifier
-            // Now we use pidAfterOpen, which is Sendable, instead of runningApp
+            // Await the async call AND extract the PID within an explicit MainActor context
+            let pidAfterOpen = try await MainActor.run {
+                fputs("info: [MainActor.run] executing workspace.openApplication...\n", stderr)
+                let runningApp = try await workspace.openApplication(at: finalAppURL, configuration: configuration)
+                let pid = runningApp.processIdentifier
+                fputs("info: [MainActor.run] got pid \(pid) from NSRunningApplication.\n", stderr)
+                return pid
+            }
 
-            logStepCompletion("opening/activating application async call completed") // Call method
+            logStepCompletion("opening/activating application async call completed")
 
              // --- 4. Determine Final PID ---
              var finalPID: pid_t? = nil
