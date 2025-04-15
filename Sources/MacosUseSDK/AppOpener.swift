@@ -165,14 +165,18 @@ private class AppOpenerOperation {
         let configuration = NSWorkspace.OpenConfiguration() // Define configuration locally
 
         do {
-            // Await the async call AND extract the PID within an explicit MainActor context
-            let pidAfterOpen = try await MainActor.run {
-                fputs("info: [MainActor.run] executing workspace.openApplication...\n", stderr)
+            // Await the async call AND extract the PID within an explicit MainActor Task
+            // This replaces MainActor.run which caused issues in Swift 6.1 with async closures
+            let pidAfterOpen = try await Task { @MainActor in
+                fputs("info: [Task @MainActor] executing workspace.openApplication...\n", stderr)
+                // The await happens *inside* the MainActor Task block
                 let runningApp = try await workspace.openApplication(at: finalAppURL, configuration: configuration)
+                // Access the non-Sendable property *inside* the MainActor Task block
                 let pid = runningApp.processIdentifier
-                fputs("info: [MainActor.run] got pid \(pid) from NSRunningApplication.\n", stderr)
+                fputs("info: [Task @MainActor] got pid \(pid) from NSRunningApplication.\n", stderr)
+                // Return the Sendable pid_t
                 return pid
-            }
+            }.value // Await the result of the Task
 
             logStepCompletion("opening/activating application async call completed")
 
