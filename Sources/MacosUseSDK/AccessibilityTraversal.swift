@@ -413,14 +413,22 @@ fileprivate class AccessibilityTraversalOperation {
             }
         }
 
-        // c) Regular Children
-        if let childrenValue = copyAttributeValue(element: element, attribute: kAXChildrenAttribute as String) {
-            if let childrenArray = childrenValue as? [AXUIElement] {
-                for childElement in childrenArray where !visitedElements.contains(childElement) {
-                    walkElementTree(element: childElement, depth: depth + 1)
+        // c) Regular Children — use ranged retrieval to avoid blocking on huge containers
+        let maxChildrenPerElement = 200
+        var childCount: CFIndex = 0
+        let countResult = AXUIElementGetAttributeValueCount(element, kAXChildrenAttribute as CFString, &childCount)
+        if countResult == .success && childCount > 0 {
+            let fetchCount = min(CFIndex(maxChildrenPerElement), childCount)
+            var childrenRef: CFArray?
+            let fetchResult = AXUIElementCopyAttributeValues(element, kAXChildrenAttribute as CFString, 0, fetchCount, &childrenRef)
+            if fetchResult == .success, let cfArray = childrenRef {
+                let childrenArray = cfArray as [AnyObject]
+                for child in childrenArray {
+                    let childElement = child as! AXUIElement
+                    if !visitedElements.contains(childElement) {
+                        walkElementTree(element: childElement, depth: depth + 1)
+                    }
                 }
-            } else if CFGetTypeID(childrenValue) == CFArrayGetTypeID() {
-                // fputs("warning: attribute \(kAXChildrenAttribute) was CFArray but failed bridge to [AXUIElement]\n", stderr)
             }
         }
     }
