@@ -102,6 +102,8 @@ fileprivate class AccessibilityTraversalOperation {
     var stepStartTime: Date = Date()
     let maxDepth = 100
     let maxElements = 2000
+    let maxTraversalSeconds: Double = 5.0
+    var traversalStartTime: Date = Date()
 
     // Define roles considered non-interactable by default
     let nonInteractableRoles: Set<String> = [
@@ -159,7 +161,7 @@ fileprivate class AccessibilityTraversalOperation {
         }
 
         // 4. Start Traversal
-        // fputs("info: starting accessibility tree traversal...\n", stderr) // Optional start log
+        traversalStartTime = Date()
         walkElementTree(element: appElement, depth: 0)
         if statistics.truncated {
             fputs("warning: traversal truncated at \(maxElements) elements cap\n", stderr)
@@ -299,9 +301,9 @@ fileprivate class AccessibilityTraversalOperation {
 
     // Recursive traversal function (now a method)
     func walkElementTree(element: AXUIElement, depth: Int) {
-        // 1. Check for cycles, depth limit, and element cap
-        // Cap on collected elements AND total visited nodes (each AX call is ~1-2ms)
-        if collectedElements.count >= maxElements || visitedElements.count >= maxElements {
+        // 1. Check for cycles, depth limit, element cap, and time limit
+        if collectedElements.count >= maxElements || visitedElements.count >= maxElements
+            || Date().timeIntervalSince(traversalStartTime) >= maxTraversalSeconds {
             statistics.truncated = true
             return
         }
