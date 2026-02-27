@@ -13,6 +13,7 @@ public enum InputAction: Sendable {
     // Use keyName for easier specification, maps to CGKeyCode internally
     case press(keyName: String, flags: CGEventFlags = [])
     case move(to: CGPoint)
+    case scroll(point: CGPoint, deltaY: Int32, deltaX: Int32 = 0)
 }
 
 /// Defines the main action to be performed.
@@ -420,6 +421,14 @@ private func executeInputAction(_ action: InputAction, options: ActionOptions) a
          } else {
              fputs("log: simulating mouse move to \(point) (no visualization)\n", stderr)
              try moveMouse(to: point)
+         }
+    case .scroll(let point, let deltaY, let deltaX):
+         if options.showAnimation {
+             fputs("log: simulating scroll AND visualizing at \(point) deltaY=\(deltaY) deltaX=\(deltaX) (duration: \(options.animationDuration))\n", stderr)
+             try scrollWheelAndVisualize(at: point, deltaY: deltaY, deltaX: deltaX, duration: options.animationDuration)
+         } else {
+             fputs("log: simulating scroll at \(point) deltaY=\(deltaY) deltaX=\(deltaX) (no visualization)\n", stderr)
+             try scrollWheel(at: point, deltaY: deltaY, deltaX: deltaX)
          }
     }
 }

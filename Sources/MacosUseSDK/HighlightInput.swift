@@ -78,6 +78,24 @@ public func moveMouseAndVisualize(to point: CGPoint, duration: Double = 0.5) thr
      fputs("log: mouse move simulation and visualization dispatched.\n", stderr)
 }
 
+/// Simulates a scroll wheel event at the specified coordinates and shows visual feedback.
+/// - Parameters:
+///   - point: The `CGPoint` where the scroll should occur.
+///   - deltaY: Vertical scroll amount. Negative = scroll up, positive = scroll down.
+///   - deltaX: Horizontal scroll amount.
+///   - duration: How long the visual feedback should last (in seconds). Default is 0.5s.
+/// - Throws: `MacosUseSDKError` if simulation or visualization fails.
+public func scrollWheelAndVisualize(at point: CGPoint, deltaY: Int32, deltaX: Int32 = 0, duration: Double = 0.5) throws {
+    fputs("log: simulating scroll wheel AND visualize at: (\(point.x), \(point.y)), deltaY: \(deltaY), deltaX: \(deltaX), duration: \(duration)s\n", stderr)
+    try scrollWheel(at: point, deltaY: deltaY, deltaX: deltaX)
+    DispatchQueue.main.async {
+        Task { @MainActor in
+            showVisualFeedback(at: point, type: FeedbackType.circle, duration: duration)
+        }
+    }
+    fputs("log: scroll wheel simulation and visualization dispatched.\n", stderr)
+}
+
 /// Simulates pressing and releasing a key with optional modifiers. Shows a caption at screen center.
 /// - Parameters:
 ///   - keyCode: The `CGKeyCode` of the key to press.

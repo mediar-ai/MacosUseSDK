@@ -30,6 +30,11 @@ public let KEY_ARROW_LEFT: CGKeyCode = 123
 public let KEY_ARROW_RIGHT: CGKeyCode = 124
 public let KEY_ARROW_DOWN: CGKeyCode = 125
 public let KEY_ARROW_UP: CGKeyCode = 126
+public let KEY_PAGE_UP: CGKeyCode = 116
+public let KEY_PAGE_DOWN: CGKeyCode = 121
+public let KEY_HOME: CGKeyCode = 115
+public let KEY_END: CGKeyCode = 119
+public let KEY_FORWARD_DELETE: CGKeyCode = 117
 // Add other key codes as needed (consider making them public if the tool needs direct access)
 
 // --- Helper Functions (Internal or Fileprivate) ---
@@ -158,6 +163,29 @@ public func moveMouse(to point: CGPoint) throws {
     fputs("log: mouse move simulation complete.\n", stderr)
 }
 
+/// Simulates a scroll wheel event at the specified screen coordinates.
+/// - Parameters:
+///   - point: The `CGPoint` where the scroll should occur.
+///   - deltaY: Vertical scroll amount. Negative = scroll up, positive = scroll down.
+///   - deltaX: Horizontal scroll amount. Negative = scroll left, positive = scroll right.
+/// - Throws: `MacosUseSDKError` if the event source cannot be created or the event cannot be posted.
+public func scrollWheel(at point: CGPoint, deltaY: Int32, deltaX: Int32 = 0) throws {
+    fputs("log: simulating scroll wheel at: (\(point.x), \(point.y)), deltaY: \(deltaY), deltaX: \(deltaX)\n", stderr)
+    let source = try createEventSource()
+
+    // Move cursor to the scroll target first so the scroll lands in the right view
+    let mouseMove = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)
+    try postEvent(mouseMove, actionDescription: "mouse move for scroll to (\(point.x), \(point.y))")
+
+    guard let scrollEvent = CGEvent(scrollWheelEvent2Source: source, units: .line, wheelCount: 2, wheel1: deltaY, wheel2: deltaX, wheel3: 0) else {
+        throw MacosUseSDKError.inputSimulationFailed("failed to create scroll wheel event")
+    }
+    scrollEvent.location = point
+    scrollEvent.post(tap: .cghidEventTap)
+    usleep(15_000)
+    fputs("log: scroll wheel simulation complete.\n", stderr)
+}
+
 /// Simulates typing a string of text using AppleScript `keystroke`.
 /// This is generally more reliable for arbitrary text than simulating individual key presses.
 /// - Parameter text: The `String` to type.
@@ -217,10 +245,15 @@ public func mapKeyNameToKeyCode(_ keyName: String) -> CGKeyCode? {
         case "space": return KEY_SPACE
         case "delete", "backspace": return KEY_DELETE
         case "escape", "esc": return KEY_ESCAPE
-        case "left": return KEY_ARROW_LEFT
-        case "right": return KEY_ARROW_RIGHT
-        case "down": return KEY_ARROW_DOWN
-        case "up": return KEY_ARROW_UP
+        case "left", "arrowleft": return KEY_ARROW_LEFT
+        case "right", "arrowright": return KEY_ARROW_RIGHT
+        case "down", "arrowdown": return KEY_ARROW_DOWN
+        case "up", "arrowup": return KEY_ARROW_UP
+        case "pageup", "page_up", "pgup": return KEY_PAGE_UP
+        case "pagedown", "page_down", "pgdn": return KEY_PAGE_DOWN
+        case "home": return KEY_HOME
+        case "end": return KEY_END
+        case "forwarddelete", "forward_delete", "fwddelete": return KEY_FORWARD_DELETE
 
         // Letters (Standard US QWERTY Layout Key Codes) - Assuming US QWERTY. Might need adjustments for others.
         case "a": return 0
