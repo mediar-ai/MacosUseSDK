@@ -300,8 +300,8 @@ fileprivate class AccessibilityTraversalOperation {
     // Recursive traversal function (now a method)
     func walkElementTree(element: AXUIElement, depth: Int) {
         // 1. Check for cycles, depth limit, and element cap
-        // Cap on collected elements AND visited elements (AX calls are slow)
-        if collectedElements.count >= maxElements || visitedElements.count >= maxElements * 3 {
+        // Cap on collected elements AND total visited nodes (each AX call is ~1-2ms)
+        if collectedElements.count >= maxElements || visitedElements.count >= maxElements {
             statistics.truncated = true
             return
         }
