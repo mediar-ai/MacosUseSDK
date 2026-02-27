@@ -199,6 +199,13 @@ public func performAction(
 
     // --- 3. Execute Primary Input Action (if not 'open' or 'traverseOnly') ---
     if case .input(let inputAction) = action {
+        // Ensure the target app is frontmost before sending input.
+        // Without this, macOS eats the first click just to activate the window.
+        if let runningApp = NSRunningApplication(processIdentifier: pid), !runningApp.isActive {
+            fputs("info: [Coordinator] App (PID \(pid)) not active, activating before input...\n", stderr)
+            runningApp.activate()
+            try? await Task.sleep(nanoseconds: 200_000_000) // 200ms for activation
+        }
         fputs("info: [Coordinator] Executing primary input action...\n", stderr)
         do {
             try await executeInputAction(inputAction, options: options)
