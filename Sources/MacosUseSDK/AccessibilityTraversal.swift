@@ -64,6 +64,7 @@ public struct Statistics: Codable, Sendable {
     public var with_text_count: Int = 0
     public var without_text_count: Int = 0
     public var visible_elements_count: Int = 0
+    public var truncated: Bool = false
     public var role_counts: [String: Int] = [:]
 }
 
@@ -100,6 +101,7 @@ fileprivate class AccessibilityTraversalOperation {
     var statistics: Statistics = Statistics()
     var stepStartTime: Date = Date()
     let maxDepth = 100
+    let maxElements = 5000
 
     // Define roles considered non-interactable by default
     let nonInteractableRoles: Set<String> = [
@@ -159,7 +161,10 @@ fileprivate class AccessibilityTraversalOperation {
         // 4. Start Traversal
         // fputs("info: starting accessibility tree traversal...\n", stderr) // Optional start log
         walkElementTree(element: appElement, depth: 0)
-        logStepCompletion("traversing accessibility tree (\(collectedElements.count) elements collected)")
+        if statistics.truncated {
+            fputs("warning: traversal truncated at \(maxElements) elements cap\n", stderr)
+        }
+        logStepCompletion("traversing accessibility tree (\(collectedElements.count) elements collected\(statistics.truncated ? ", TRUNCATED" : ""))")
 
         // 5. Process Results
         // fputs("info: sorting elements...\n", stderr) // Optional start log
@@ -294,7 +299,11 @@ fileprivate class AccessibilityTraversalOperation {
 
     // Recursive traversal function (now a method)
     func walkElementTree(element: AXUIElement, depth: Int) {
-        // 1. Check for cycles and depth limit
+        // 1. Check for cycles, depth limit, and element cap
+        if collectedElements.count >= maxElements {
+            statistics.truncated = true
+            return
+        }
         if visitedElements.contains(element) || depth > maxDepth {
             // fputs("debug: skipping visited or too deep element (depth: \(depth))\n", stderr)
             return
