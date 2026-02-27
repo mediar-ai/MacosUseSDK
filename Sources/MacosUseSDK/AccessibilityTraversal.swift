@@ -101,7 +101,7 @@ fileprivate class AccessibilityTraversalOperation {
     var statistics: Statistics = Statistics()
     var stepStartTime: Date = Date()
     let maxDepth = 100
-    let maxElements = 5000
+    let maxElements = 2000
 
     // Define roles considered non-interactable by default
     let nonInteractableRoles: Set<String> = [
