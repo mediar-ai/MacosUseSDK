@@ -162,7 +162,7 @@ fileprivate class AccessibilityTraversalOperation {
 
         // 4. Start Traversal
         traversalStartTime = Date()
-        walkElementTree(element: appElement, depth: 0)
+        walkElementTreeBFS(rootElement: appElement)
         if statistics.truncated {
             fputs("warning: traversal truncated at \(maxElements) elements cap\n", stderr)
         }
@@ -299,136 +299,113 @@ fileprivate class AccessibilityTraversalOperation {
         return (role, roleDesc, combinedText, textParts, position, size)
     }
 
-    // Recursive traversal function (now a method)
-    func walkElementTree(element: AXUIElement, depth: Int) {
-        // 1. Check for cycles, depth limit, element cap, and time limit
-        if collectedElements.count >= maxElements || visitedElements.count >= maxElements
-            || Date().timeIntervalSince(traversalStartTime) >= maxTraversalSeconds {
-            statistics.truncated = true
-            return
-        }
-        if visitedElements.contains(element) || depth > maxDepth {
-            // fputs("debug: skipping visited or too deep element (depth: \(depth))\n", stderr)
-            return
-        }
-        visitedElements.insert(element)
-
-        // 2. Process the current element
-        let (role, roleDesc, combinedText, _, position, size) = extractElementAttributes(element: element)
-        let hasText = combinedText != nil && !combinedText!.isEmpty
-        let isNonInteractable = nonInteractableRoles.contains(role)
-        let roleWithoutAX = role.starts(with: "AX") ? String(role.dropFirst(2)) : role
-
-        statistics.role_counts[role, default: 0] += 1
-
-        // 3. Determine Geometry and Visibility
-        var finalX: Double? = nil
-        var finalY: Double? = nil
-        var finalWidth: Double? = nil
-        var finalHeight: Double? = nil
-        if let p = position, let s = size, s.width > 0 || s.height > 0 {
-            finalX = Double(p.x)
-            finalY = Double(p.y)
-            finalWidth = s.width > 0 ? Double(s.width) : nil
-            finalHeight = s.height > 0 ? Double(s.height) : nil
-        }
-        let isGeometricallyVisible = finalX != nil && finalY != nil && finalWidth != nil && finalHeight != nil
-
-        // Always update the visible_elements_count stat based on geometry, regardless of collection
-        if isGeometricallyVisible {
-            statistics.visible_elements_count += 1
-        }
-
-        // 4. Apply Filtering Logic
-        var displayRole = role
-        if let desc = roleDesc, !desc.isEmpty, !desc.elementsEqual(roleWithoutAX) {
-            displayRole = "\(role) (\(desc))"
-        }
-
-        // Determine if the element passes the original filter criteria
-        let passesOriginalFilter = !isNonInteractable || hasText
-
-        // Determine if the element should be collected based on the new flag
-        let shouldCollectElement = passesOriginalFilter && (!onlyVisibleElements || isGeometricallyVisible)
-
-        if shouldCollectElement {
-            let elementData = ElementData(
-                role: displayRole, text: combinedText,
-                x: finalX, y: finalY, width: finalWidth, height: finalHeight
-            )
-
-            if collectedElements.insert(elementData).inserted {
-                // Log addition (optional)
-                // let geometryStatus = isGeometricallyVisible ? "visible" : "not_visible"
-                // fputs("debug: + collect [\(geometryStatus)] | r: \(displayRole) | t: '\(combinedText ?? "nil")'\n", stderr)
-
-                // Update text counts only for collected elements
-                if hasText { statistics.with_text_count += 1 }
-                else { statistics.without_text_count += 1 }
-            } else {
-                // Log duplicate (optional)
-                // fputs("debug: = skip duplicate | r: \(displayRole) | t: '\(combinedText ?? "nil")'\n", stderr)
-            }
-        } else {
-            // Log exclusion (MODIFIED logic)
-            var reasons: [String] = []
-            if !passesOriginalFilter {
-                 if isNonInteractable { reasons.append("non-interactable role '\(role)'") }
-                 if !hasText { reasons.append("no text") }
-            }
-            // Add visibility reason only if it was the deciding factor
-            if passesOriginalFilter && onlyVisibleElements && !isGeometricallyVisible {
-                reasons.append("not visible")
-            }
-            // fputs("debug: - exclude | r: \(role) | reason(s): \(reasons.joined(separator: ", "))\n", stderr)
-
-            // Update exclusion counts
-            statistics.excluded_count += 1
-            // Note: The specific exclusion reasons (non-interactable, no-text) might be slightly less precise
-            // if an element is excluded *only* because it's invisible, but this keeps the stats simple.
-            // We can refine this if needed.
-            if isNonInteractable { statistics.excluded_non_interactable += 1 }
-            if !hasText { statistics.excluded_no_text += 1 }
-        }
-
-        // 5. Recursively traverse children, windows, main window
-        // a) Windows
-        if let windowsValue = copyAttributeValue(element: element, attribute: kAXWindowsAttribute as String) {
-            if let windowsArray = windowsValue as? [AXUIElement] {
-                for windowElement in windowsArray where !visitedElements.contains(windowElement) {
-                    walkElementTree(element: windowElement, depth: depth + 1)
-                }
-            } else if CFGetTypeID(windowsValue) == CFArrayGetTypeID() {
-                // fputs("warning: attribute \(kAXWindowsAttribute) was CFArray but failed bridge to [AXUIElement]\n", stderr)
-            }
-        }
-
-        // b) Main Window
-        if let mainWindowValue = copyAttributeValue(element: element, attribute: kAXMainWindowAttribute as String) {
-            if CFGetTypeID(mainWindowValue) == AXUIElementGetTypeID() {
-                 let mainWindowElement = mainWindowValue as! AXUIElement
-                 if !visitedElements.contains(mainWindowElement) {
-                     walkElementTree(element: mainWindowElement, depth: depth + 1)
-                 }
-            } else {
-                 // fputs("warning: attribute \(kAXMainWindowAttribute) was not an AXUIElement\n", stderr)
-            }
-        }
-
-        // c) Regular Children — use ranged retrieval to avoid blocking on huge containers
+    // BFS traversal function — processes all siblings at each depth before going deeper.
+    // This ensures dialog buttons (siblings of file lists) are discovered before
+    // deep-diving into individual file list rows.
+    func walkElementTreeBFS(rootElement: AXUIElement) {
+        // Queue: array of (element, depth) with advancing read index for O(1) dequeue
+        var queue: [(AXUIElement, Int)] = [(rootElement, 0)]
+        var readIndex = 0
         let maxChildrenPerElement = 200
-        var childCount: CFIndex = 0
-        let countResult = AXUIElementGetAttributeValueCount(element, kAXChildrenAttribute as CFString, &childCount)
-        if countResult == .success && childCount > 0 {
-            let fetchCount = min(CFIndex(maxChildrenPerElement), childCount)
-            var childrenRef: CFArray?
-            let fetchResult = AXUIElementCopyAttributeValues(element, kAXChildrenAttribute as CFString, 0, fetchCount, &childrenRef)
-            if fetchResult == .success, let cfArray = childrenRef {
-                let childrenArray = cfArray as [AnyObject]
-                for child in childrenArray {
-                    let childElement = child as! AXUIElement
-                    if !visitedElements.contains(childElement) {
-                        walkElementTree(element: childElement, depth: depth + 1)
+
+        while readIndex < queue.count {
+            // Check caps
+            if collectedElements.count >= maxElements || visitedElements.count >= maxElements
+                || Date().timeIntervalSince(traversalStartTime) >= maxTraversalSeconds {
+                statistics.truncated = true
+                return
+            }
+
+            let (element, depth) = queue[readIndex]
+            readIndex += 1
+
+            // Skip visited or too deep
+            if visitedElements.contains(element) || depth > maxDepth { continue }
+            visitedElements.insert(element)
+
+            // --- Process current element ---
+            let (role, roleDesc, combinedText, _, position, size) = extractElementAttributes(element: element)
+            let hasText = combinedText != nil && !combinedText!.isEmpty
+            let isNonInteractable = nonInteractableRoles.contains(role)
+            let roleWithoutAX = role.starts(with: "AX") ? String(role.dropFirst(2)) : role
+
+            statistics.role_counts[role, default: 0] += 1
+
+            // Geometry and visibility
+            var finalX: Double? = nil
+            var finalY: Double? = nil
+            var finalWidth: Double? = nil
+            var finalHeight: Double? = nil
+            if let p = position, let s = size, s.width > 0 || s.height > 0 {
+                finalX = Double(p.x)
+                finalY = Double(p.y)
+                finalWidth = s.width > 0 ? Double(s.width) : nil
+                finalHeight = s.height > 0 ? Double(s.height) : nil
+            }
+            let isGeometricallyVisible = finalX != nil && finalY != nil && finalWidth != nil && finalHeight != nil
+
+            if isGeometricallyVisible {
+                statistics.visible_elements_count += 1
+            }
+
+            // Filtering
+            var displayRole = role
+            if let desc = roleDesc, !desc.isEmpty, !desc.elementsEqual(roleWithoutAX) {
+                displayRole = "\(role) (\(desc))"
+            }
+
+            let passesOriginalFilter = !isNonInteractable || hasText
+            let shouldCollectElement = passesOriginalFilter && (!onlyVisibleElements || isGeometricallyVisible)
+
+            if shouldCollectElement {
+                let elementData = ElementData(
+                    role: displayRole, text: combinedText,
+                    x: finalX, y: finalY, width: finalWidth, height: finalHeight
+                )
+                if collectedElements.insert(elementData).inserted {
+                    if hasText { statistics.with_text_count += 1 }
+                    else { statistics.without_text_count += 1 }
+                }
+            } else {
+                statistics.excluded_count += 1
+                if isNonInteractable { statistics.excluded_non_interactable += 1 }
+                if !hasText { statistics.excluded_no_text += 1 }
+            }
+
+            // --- Enqueue children (BFS: windows first, then main window, then regular children) ---
+            // a) Windows
+            if let windowsValue = copyAttributeValue(element: element, attribute: kAXWindowsAttribute as String) {
+                if let windowsArray = windowsValue as? [AXUIElement] {
+                    for windowElement in windowsArray where !visitedElements.contains(windowElement) {
+                        queue.append((windowElement, depth + 1))
+                    }
+                }
+            }
+
+            // b) Main Window
+            if let mainWindowValue = copyAttributeValue(element: element, attribute: kAXMainWindowAttribute as String) {
+                if CFGetTypeID(mainWindowValue) == AXUIElementGetTypeID() {
+                    let mainWindowElement = mainWindowValue as! AXUIElement
+                    if !visitedElements.contains(mainWindowElement) {
+                        queue.append((mainWindowElement, depth + 1))
+                    }
+                }
+            }
+
+            // c) Regular Children — ranged retrieval to avoid blocking on huge containers
+            var childCount: CFIndex = 0
+            let countResult = AXUIElementGetAttributeValueCount(element, kAXChildrenAttribute as CFString, &childCount)
+            if countResult == .success && childCount > 0 {
+                let fetchCount = min(CFIndex(maxChildrenPerElement), childCount)
+                var childrenRef: CFArray?
+                let fetchResult = AXUIElementCopyAttributeValues(element, kAXChildrenAttribute as CFString, 0, fetchCount, &childrenRef)
+                if fetchResult == .success, let cfArray = childrenRef {
+                    let childrenArray = cfArray as [AnyObject]
+                    for child in childrenArray {
+                        let childElement = child as! AXUIElement
+                        if !visitedElements.contains(childElement) {
+                            queue.append((childElement, depth + 1))
+                        }
                     }
                 }
             }
