@@ -124,7 +124,13 @@ fileprivate class AccessibilityTraversalOperation {
         fputs("info: starting traversal for pid: \(pid) (Visible Only: \(onlyVisibleElements))\n", stderr)
         stepStartTime = Date() // Initialize step timer
 
-        // 1. Accessibility Check
+        // 1. Validate PID exists (fast fail before potentially blocking AX check)
+        guard let runningApp = NSRunningApplication(processIdentifier: pid) else {
+            fputs("error: no running application found with pid \(pid).\n", stderr)
+            throw MacosUseSDKError.appNotFound(pid: pid)
+        }
+
+        // 2. Accessibility Check
         fputs("info: checking accessibility permissions...\n", stderr)
         let checkOptions = ["AXTrustedCheckOptionPrompt": kCFBooleanTrue] as CFDictionary
         let isTrusted = AXIsProcessTrustedWithOptions(checkOptions)
@@ -135,12 +141,6 @@ fileprivate class AccessibilityTraversalOperation {
             throw MacosUseSDKError.accessibilityDenied
         }
         logStepCompletion("checking accessibility permissions (granted)")
-
-        // 2. Find Application by PID and Create AXUIElement
-        guard let runningApp = NSRunningApplication(processIdentifier: pid) else {
-            fputs("error: no running application found with pid \(pid).\n", stderr)
-            throw MacosUseSDKError.appNotFound(pid: pid)
-        }
         let targetAppName = runningApp.localizedName ?? "App (PID: \(pid))"
         let appElement = AXUIElementCreateApplication(pid)
         // logStepCompletion("finding application '\(targetAppName)'") // Logging step completion implicitly here
