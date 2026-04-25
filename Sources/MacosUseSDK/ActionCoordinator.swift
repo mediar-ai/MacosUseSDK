@@ -14,6 +14,11 @@ public enum InputAction: Sendable {
     case press(keyName: String, flags: CGEventFlags = [])
     case move(to: CGPoint)
     case scroll(point: CGPoint, deltaY: Int32, deltaX: Int32 = 0)
+    // AX-driven actions for Catalyst/sandboxed apps where synthetic input is filtered.
+    // Pid is carried in the case so the action self-contains everything needed
+    // for AX hit-testing.
+    case axSetValue(point: CGPoint, value: String, pid: pid_t)
+    case axPress(point: CGPoint, pid: pid_t)
 }
 
 /// Defines the main action to be performed.
@@ -437,6 +442,12 @@ private func executeInputAction(_ action: InputAction, options: ActionOptions) a
              fputs("log: simulating scroll at \(point) deltaY=\(deltaY) deltaX=\(deltaX) (no visualization)\n", stderr)
              try scrollWheel(at: point, deltaY: deltaY, deltaX: deltaX)
          }
+    case .axSetValue(let point, let value, let pid):
+        fputs("log: AX set value at \(point) for pid \(pid)\n", stderr)
+        try setAccessibilityValue(pid: pid, at: point, value: value)
+    case .axPress(let point, let pid):
+        fputs("log: AX press at \(point) for pid \(pid)\n", stderr)
+        try pressAccessibilityElement(pid: pid, at: point)
     }
 }
 
