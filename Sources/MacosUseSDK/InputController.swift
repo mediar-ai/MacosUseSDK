@@ -86,24 +86,43 @@ public func pressKey(keyCode: CGKeyCode, flags: CGEventFlags = []) throws {
     fputs("log: key press simulation complete.\n", stderr)
 }
 
+// Builds a CGEvent for a mouse action by going through NSEvent first, so that
+// Catalyst, Electron, and other UIKit-bridged apps treat it as a trusted event;
+// raw CGEvent mouse synthesis is silently ignored by some of those apps.
+// The location override at the end keeps top-left CGPoint semantics, since
+// NSEvent uses bottom-left Cocoa coordinates which would otherwise flip y.
+fileprivate func buildMouseEvent(type: NSEvent.EventType, at point: CGPoint, clickCount: Int) throws -> CGEvent {
+    let isUp = (type == .leftMouseUp || type == .rightMouseUp || type == .otherMouseUp)
+    let nsEvent = NSEvent.mouseEvent(
+        with: type,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: 0,
+        context: nil,
+        eventNumber: 0,
+        clickCount: clickCount,
+        pressure: isUp ? 0.0 : 1.0
+    )
+    guard let cg = nsEvent?.cgEvent else {
+        throw MacosUseSDKError.inputSimulationFailed("failed to build NSEvent->CGEvent for type \(type.rawValue)")
+    }
+    cg.location = point
+    return cg
+}
+
 /// Simulates a left mouse click at the specified screen coordinates.
 /// Does not move the cursor first. Call `moveMouse` beforehand if needed.
 /// - Parameter point: The `CGPoint` where the click should occur.
 /// - Throws: `MacosUseSDKError` if the event source cannot be created or the event cannot be posted.
 public func clickMouse(at point: CGPoint) throws {
-    fputs("log: simulating left click at: (\(point.x), \(point.y))\n", stderr) // Log action
-    let source = try createEventSource()
+    fputs("log: simulating left click at: (\(point.x), \(point.y))\n", stderr)
 
-    // Create and post mouse down event
-    let mouseDown = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)
-    try postEvent(mouseDown, actionDescription: "mouse down at (\(point.x), \(point.y))")
+    let down = try buildMouseEvent(type: .leftMouseDown, at: point, clickCount: 1)
+    try postEvent(down, actionDescription: "mouse down at (\(point.x), \(point.y))")
 
-    // Short delay - moved into postEvent
-    // usleep(10_000)
-
-    // Create and post mouse up event
-    let mouseUp = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
-    try postEvent(mouseUp, actionDescription: "mouse up at (\(point.x), \(point.y))")
+    let up = try buildMouseEvent(type: .leftMouseUp, at: point, clickCount: 1)
+    try postEvent(up, actionDescription: "mouse up at (\(point.x), \(point.y))")
     fputs("log: left click simulation complete.\n", stderr)
 }
 
@@ -112,20 +131,14 @@ public func clickMouse(at point: CGPoint) throws {
 /// - Parameter point: The `CGPoint` where the double click should occur.
 /// - Throws: `MacosUseSDKError` if the event source cannot be created or the event cannot be posted.
 public func doubleClickMouse(at point: CGPoint) throws {
-     fputs("log: simulating double-click at: (\(point.x), \(point.y))\n", stderr) // Log action
-    let source = try createEventSource()
+    fputs("log: simulating double-click at: (\(point.x), \(point.y))\n", stderr)
 
-    // Use the specific double-click event type directly
-    let doubleClickEvent = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)
-    doubleClickEvent?.setIntegerValueField(.mouseEventClickState, value: 2) // Set click count
-    try postEvent(doubleClickEvent, actionDescription: "double click down at (\(point.x), \(point.y))")
+    let down = try buildMouseEvent(type: .leftMouseDown, at: point, clickCount: 2)
+    try postEvent(down, actionDescription: "double click down at (\(point.x), \(point.y))")
 
-    // usleep(10_000) // Delay moved into postEvent
-
-    let mouseUpEvent = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
-    mouseUpEvent?.setIntegerValueField(.mouseEventClickState, value: 2) // Set click count
-    try postEvent(mouseUpEvent, actionDescription: "double click up at (\(point.x), \(point.y))")
-     fputs("log: double-click simulation complete.\n", stderr)
+    let up = try buildMouseEvent(type: .leftMouseUp, at: point, clickCount: 2)
+    try postEvent(up, actionDescription: "double click up at (\(point.x), \(point.y))")
+    fputs("log: double-click simulation complete.\n", stderr)
 }
 
 // Simulates a right mouse click at the specified coordinates
@@ -134,20 +147,14 @@ public func doubleClickMouse(at point: CGPoint) throws {
 /// - Parameter point: The `CGPoint` where the right click should occur.
 /// - Throws: `MacosUseSDKError` if the event source cannot be created or the event cannot be posted.
 public func rightClickMouse(at point: CGPoint) throws {
-     fputs("log: simulating right-click at: (\(point.x), \(point.y))\n", stderr) // Log action
-    let source = try createEventSource()
+    fputs("log: simulating right-click at: (\(point.x), \(point.y))\n", stderr)
 
-    // Create and post mouse down event (RIGHT button)
-    let mouseDown = CGEvent(mouseEventSource: source, mouseType: .rightMouseDown, mouseCursorPosition: point, mouseButton: .right)
-    try postEvent(mouseDown, actionDescription: "right mouse down at (\(point.x), \(point.y))")
+    let down = try buildMouseEvent(type: .rightMouseDown, at: point, clickCount: 1)
+    try postEvent(down, actionDescription: "right mouse down at (\(point.x), \(point.y))")
 
-    // Short delay - moved into postEvent
-    // usleep(10_000)
-
-    // Create and post mouse up event (RIGHT button)
-    let mouseUp = CGEvent(mouseEventSource: source, mouseType: .rightMouseUp, mouseCursorPosition: point, mouseButton: .right)
-    try postEvent(mouseUp, actionDescription: "right mouse up at (\(point.x), \(point.y))")
-     fputs("log: right-click simulation complete.\n", stderr)
+    let up = try buildMouseEvent(type: .rightMouseUp, at: point, clickCount: 1)
+    try postEvent(up, actionDescription: "right mouse up at (\(point.x), \(point.y))")
+    fputs("log: right-click simulation complete.\n", stderr)
 }
 
 /// Moves the mouse cursor to the specified screen coordinates.
@@ -186,50 +193,45 @@ public func scrollWheel(at point: CGPoint, deltaY: Int32, deltaX: Int32 = 0) thr
     fputs("log: scroll wheel simulation complete.\n", stderr)
 }
 
-/// Simulates typing a string of text using AppleScript `keystroke`.
-/// This is generally more reliable for arbitrary text than simulating individual key presses.
+/// Simulates typing a string of text by posting CGEvents whose unicode payload
+/// is set via `CGEventKeyboardSetUnicodeString`. Unlike the previous AppleScript
+/// implementation, this works in sandboxed processes, requires no Script Editor
+/// consent, and does not fork-exec per call.
 /// - Parameter text: The `String` to type.
-/// - Throws: `MacosUseSDKError` if the osascript command fails to execute or returns an error.
+/// - Throws: `MacosUseSDKError` if the event source cannot be created or events
+///   cannot be posted.
 public func writeText(_ text: String) throws {
-    // Using AppleScript's 'keystroke' is simplest for arbitrary text,
-    // as it handles character mapping, keyboard layouts, etc.
-    // A pure CGEvent approach would require complex character-to-keycode+flags mapping.
-    fputs("log: simulating text writing: \"\(text)\" (using AppleScript)\n", stderr) // Log action
-
-    // Escape double quotes and backslashes within the text for AppleScript string
-    let escapedText = text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-    let script = "tell application \"System Events\" to keystroke \"\(escapedText)\""
-
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    process.arguments = ["-e", script]
-
-    // Capture potential errors from osascript
-    let errorPipe = Pipe()
-    process.standardError = errorPipe
-
-    do {
-        try process.run()
-        process.waitUntilExit()
-
-        // Read error output
-        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        let errorString = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-
-        if process.terminationStatus == 0 {
-            fputs("log: text writing simulation complete.\n", stderr)
-        } else {
-             fputs("error: osascript command failed with status \(process.terminationStatus)\n", stderr)
-             if !errorString.isEmpty {
-                 fputs("error details (osascript): \(errorString)\n", stderr)
-             }
-            throw MacosUseSDKError.osascriptExecutionFailed(status: process.terminationStatus, message: errorString)
-        }
-    } catch {
-        // Catch errors from process.run() itself
-        throw MacosUseSDKError.inputSimulationFailed("failed to execute osascript for writetext: \(error.localizedDescription)")
+    fputs("log: simulating text writing: \"\(text)\" (CGEventKeyboardSetUnicodeString)\n", stderr)
+    guard !text.isEmpty else {
+        fputs("log: text writing skipped (empty string).\n", stderr)
+        return
     }
+
+    let source = try createEventSource()
+
+    // Post one keyDown/keyUp pair per scalar so each character lands as a
+    // distinct event. Some text fields collapse multi-char unicode payloads
+    // into a single keystroke, which breaks IME/auto-complete behavior.
+    for scalar in text.unicodeScalars {
+        let utf16 = Array(String(scalar).utf16)
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) else {
+            throw MacosUseSDKError.inputSimulationFailed("failed to create keyboard down event")
+        }
+        utf16.withUnsafeBufferPointer { buf in
+            keyDown.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: buf.baseAddress)
+        }
+        try postEvent(keyDown, actionDescription: "key down for scalar U+\(String(scalar.value, radix: 16))")
+
+        guard let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
+            throw MacosUseSDKError.inputSimulationFailed("failed to create keyboard up event")
+        }
+        utf16.withUnsafeBufferPointer { buf in
+            keyUp.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: buf.baseAddress)
+        }
+        try postEvent(keyUp, actionDescription: "key up for scalar U+\(String(scalar.value, radix: 16))")
+    }
+
+    fputs("log: text writing simulation complete.\n", stderr)
 }
 
 
