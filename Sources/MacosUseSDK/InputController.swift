@@ -86,43 +86,19 @@ public func pressKey(keyCode: CGKeyCode, flags: CGEventFlags = []) throws {
     fputs("log: key press simulation complete.\n", stderr)
 }
 
-// Builds a CGEvent for a mouse action by going through NSEvent first, so that
-// Catalyst, Electron, and other UIKit-bridged apps treat it as a trusted event;
-// raw CGEvent mouse synthesis is silently ignored by some of those apps.
-// The location override at the end keeps top-left CGPoint semantics, since
-// NSEvent uses bottom-left Cocoa coordinates which would otherwise flip y.
-fileprivate func buildMouseEvent(type: NSEvent.EventType, at point: CGPoint, clickCount: Int) throws -> CGEvent {
-    let isUp = (type == .leftMouseUp || type == .rightMouseUp || type == .otherMouseUp)
-    let nsEvent = NSEvent.mouseEvent(
-        with: type,
-        location: .zero,
-        modifierFlags: [],
-        timestamp: ProcessInfo.processInfo.systemUptime,
-        windowNumber: 0,
-        context: nil,
-        eventNumber: 0,
-        clickCount: clickCount,
-        pressure: isUp ? 0.0 : 1.0
-    )
-    guard let cg = nsEvent?.cgEvent else {
-        throw MacosUseSDKError.inputSimulationFailed("failed to build NSEvent->CGEvent for type \(type.rawValue)")
-    }
-    cg.location = point
-    return cg
-}
-
 /// Simulates a left mouse click at the specified screen coordinates.
 /// Does not move the cursor first. Call `moveMouse` beforehand if needed.
 /// - Parameter point: The `CGPoint` where the click should occur.
 /// - Throws: `MacosUseSDKError` if the event source cannot be created or the event cannot be posted.
 public func clickMouse(at point: CGPoint) throws {
     fputs("log: simulating left click at: (\(point.x), \(point.y))\n", stderr)
+    let source = try createEventSource()
 
-    let down = try buildMouseEvent(type: .leftMouseDown, at: point, clickCount: 1)
-    try postEvent(down, actionDescription: "mouse down at (\(point.x), \(point.y))")
+    let mouseDown = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)
+    try postEvent(mouseDown, actionDescription: "mouse down at (\(point.x), \(point.y))")
 
-    let up = try buildMouseEvent(type: .leftMouseUp, at: point, clickCount: 1)
-    try postEvent(up, actionDescription: "mouse up at (\(point.x), \(point.y))")
+    let mouseUp = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
+    try postEvent(mouseUp, actionDescription: "mouse up at (\(point.x), \(point.y))")
     fputs("log: left click simulation complete.\n", stderr)
 }
 
@@ -132,28 +108,31 @@ public func clickMouse(at point: CGPoint) throws {
 /// - Throws: `MacosUseSDKError` if the event source cannot be created or the event cannot be posted.
 public func doubleClickMouse(at point: CGPoint) throws {
     fputs("log: simulating double-click at: (\(point.x), \(point.y))\n", stderr)
+    let source = try createEventSource()
 
-    let down = try buildMouseEvent(type: .leftMouseDown, at: point, clickCount: 2)
-    try postEvent(down, actionDescription: "double click down at (\(point.x), \(point.y))")
+    let doubleClickEvent = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)
+    doubleClickEvent?.setIntegerValueField(.mouseEventClickState, value: 2)
+    try postEvent(doubleClickEvent, actionDescription: "double click down at (\(point.x), \(point.y))")
 
-    let up = try buildMouseEvent(type: .leftMouseUp, at: point, clickCount: 2)
-    try postEvent(up, actionDescription: "double click up at (\(point.x), \(point.y))")
+    let mouseUpEvent = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
+    mouseUpEvent?.setIntegerValueField(.mouseEventClickState, value: 2)
+    try postEvent(mouseUpEvent, actionDescription: "double click up at (\(point.x), \(point.y))")
     fputs("log: double-click simulation complete.\n", stderr)
 }
 
-// Simulates a right mouse click at the specified coordinates
 /// Simulates a right mouse click at the specified screen coordinates.
 /// Does not move the cursor first. Call `moveMouse` beforehand if needed.
 /// - Parameter point: The `CGPoint` where the right click should occur.
 /// - Throws: `MacosUseSDKError` if the event source cannot be created or the event cannot be posted.
 public func rightClickMouse(at point: CGPoint) throws {
     fputs("log: simulating right-click at: (\(point.x), \(point.y))\n", stderr)
+    let source = try createEventSource()
 
-    let down = try buildMouseEvent(type: .rightMouseDown, at: point, clickCount: 1)
-    try postEvent(down, actionDescription: "right mouse down at (\(point.x), \(point.y))")
+    let mouseDown = CGEvent(mouseEventSource: source, mouseType: .rightMouseDown, mouseCursorPosition: point, mouseButton: .right)
+    try postEvent(mouseDown, actionDescription: "right mouse down at (\(point.x), \(point.y))")
 
-    let up = try buildMouseEvent(type: .rightMouseUp, at: point, clickCount: 1)
-    try postEvent(up, actionDescription: "right mouse up at (\(point.x), \(point.y))")
+    let mouseUp = CGEvent(mouseEventSource: source, mouseType: .rightMouseUp, mouseCursorPosition: point, mouseButton: .right)
+    try postEvent(mouseUp, actionDescription: "right mouse up at (\(point.x), \(point.y))")
     fputs("log: right-click simulation complete.\n", stderr)
 }
 
