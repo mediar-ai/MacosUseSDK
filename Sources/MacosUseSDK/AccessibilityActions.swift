@@ -23,6 +23,36 @@ fileprivate func axElement(at point: CGPoint, pid: Int32) throws -> AXUIElement 
     return element
 }
 
+// Returns the role of an AX element, or nil if unavailable.
+fileprivate func axRole(of element: AXUIElement) -> String? {
+    var role: AnyObject?
+    let err = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+    guard err == .success else { return nil }
+    return role as? String
+}
+
+// Walks up the AX parent chain (depth-capped) and returns the first ancestor
+// whose role matches one of `targetRoles`. If none match, returns the original
+// element so callers can fall back to the deepest hit.
+//
+// Catalyst hit-tests typically return an AXCell or AXStaticText inside a row,
+// but the selectable element is the parent AXRow. This walks up to find it.
+fileprivate func axAncestor(of element: AXUIElement, matching targetRoles: Set<String>, maxDepth: Int = 12) -> AXUIElement {
+    if let r = axRole(of: element), targetRoles.contains(r) { return element }
+    var current = element
+    for _ in 0..<maxDepth {
+        var parent: AnyObject?
+        let err = AXUIElementCopyAttributeValue(current, kAXParentAttribute as CFString, &parent)
+        guard err == .success, let parentRef = parent, CFGetTypeID(parentRef) == AXUIElementGetTypeID() else {
+            break
+        }
+        let parentEl = parentRef as! AXUIElement
+        if let r = axRole(of: parentEl), targetRoles.contains(r) { return parentEl }
+        current = parentEl
+    }
+    return element
+}
+
 /// Sets `kAXValueAttribute` on the AX element under `point` for the given pid.
 /// Useful for filling text fields without simulating key events — works in
 /// Catalyst/secure-input contexts where typing is filtered.
@@ -79,12 +109,17 @@ public func pressAccessibilityElement(pid: Int32, at point: CGPoint) throws {
 /// - Throws: `MacosUseSDKError` if hit-test fails or the AX set call rejects.
 public func setAccessibilitySelected(pid: Int32, at point: CGPoint, selected: Bool) throws {
     fputs("log: AX set selected=\(selected) at (\(point.x), \(point.y)) for pid \(pid)\n", stderr)
-    let element = try axElement(at: point, pid: pid)
+    let hit = try axElement(at: point, pid: pid)
+    // Hit-test usually returns an AXCell or AXStaticText *inside* the row; walk
+    // up to the actual selectable container so the table reconciles selection.
+    let target = axAncestor(of: hit, matching: ["AXRow", "AXOutlineRow", "AXListItem"])
+    let targetRole = axRole(of: target) ?? "<unknown>"
+    fputs("log: AX set selected target role=\(targetRole)\n", stderr)
     let value: CFBoolean = selected ? kCFBooleanTrue : kCFBooleanFalse
-    let err = AXUIElementSetAttributeValue(element, kAXSelectedAttribute as CFString, value)
+    let err = AXUIElementSetAttributeValue(target, kAXSelectedAttribute as CFString, value)
     guard err == .success else {
         throw MacosUseSDKError.inputSimulationFailed(
-            "AXUIElementSetAttributeValue(kAXSelectedAttribute=\(selected)) failed at (\(point.x), \(point.y)) — AXError \(err.rawValue)"
+            "AXUIElementSetAttributeValue(kAXSelectedAttribute=\(selected)) on \(targetRole) failed at (\(point.x), \(point.y)) — AXError \(err.rawValue)"
         )
     }
     fputs("log: AX set selected complete.\n", stderr)
