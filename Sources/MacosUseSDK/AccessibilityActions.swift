@@ -63,3 +63,29 @@ public func pressAccessibilityElement(pid: Int32, at point: CGPoint) throws {
     }
     fputs("log: AX press complete.\n", stderr)
 }
+
+/// Sets `kAXSelectedAttribute` on the AX element under `point`. The right
+/// primitive for selecting table rows, list items, sidebar entries, and
+/// other selection-bearing controls in Catalyst apps where rows expose the
+/// `AXSelected` attribute but no `AXPress` action.
+///
+/// In single-selection tables, setting this attribute typically deselects
+/// any prior selection automatically; the host app reconciles the parent
+/// table's `kAXSelectedRowsAttribute` in response.
+/// - Parameters:
+///   - pid: Target application's process id.
+///   - point: Top-left CGPoint of the element to (de)select.
+///   - selected: True to select, false to deselect.
+/// - Throws: `MacosUseSDKError` if hit-test fails or the AX set call rejects.
+public func setAccessibilitySelected(pid: Int32, at point: CGPoint, selected: Bool) throws {
+    fputs("log: AX set selected=\(selected) at (\(point.x), \(point.y)) for pid \(pid)\n", stderr)
+    let element = try axElement(at: point, pid: pid)
+    let value: CFBoolean = selected ? kCFBooleanTrue : kCFBooleanFalse
+    let err = AXUIElementSetAttributeValue(element, kAXSelectedAttribute as CFString, value)
+    guard err == .success else {
+        throw MacosUseSDKError.inputSimulationFailed(
+            "AXUIElementSetAttributeValue(kAXSelectedAttribute=\(selected)) failed at (\(point.x), \(point.y)) — AXError \(err.rawValue)"
+        )
+    }
+    fputs("log: AX set selected complete.\n", stderr)
+}

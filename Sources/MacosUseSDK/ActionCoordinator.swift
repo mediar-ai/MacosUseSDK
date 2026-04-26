@@ -19,6 +19,7 @@ public enum InputAction: Sendable {
     // for AX hit-testing.
     case axSetValue(point: CGPoint, value: String, pid: pid_t)
     case axPress(point: CGPoint, pid: pid_t)
+    case axSetSelected(point: CGPoint, selected: Bool, pid: pid_t)
 }
 
 /// Defines the main action to be performed.
@@ -448,6 +449,9 @@ private func executeInputAction(_ action: InputAction, options: ActionOptions) a
     case .axPress(let point, let pid):
         fputs("log: AX press at \(point) for pid \(pid)\n", stderr)
         try pressAccessibilityElement(pid: pid, at: point)
+    case .axSetSelected(let point, let selected, let pid):
+        fputs("log: AX set selected=\(selected) at \(point) for pid \(pid)\n", stderr)
+        try setAccessibilitySelected(pid: pid, at: point, selected: selected)
     }
 }
 
