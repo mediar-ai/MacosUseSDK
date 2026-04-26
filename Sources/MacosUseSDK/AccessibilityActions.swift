@@ -23,6 +23,59 @@ fileprivate func axElement(at point: CGPoint, pid: Int32) throws -> AXUIElement 
     return element
 }
 
+// Reads the screen-space frame (origin top-left) of an AX element.
+fileprivate func axFrame(of element: AXUIElement) -> CGRect? {
+    var posVal: AnyObject?
+    var sizeVal: AnyObject?
+    let pErr = AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posVal)
+    let sErr = AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeVal)
+    guard pErr == .success, sErr == .success,
+          let p = posVal, let s = sizeVal,
+          CFGetTypeID(p) == AXValueGetTypeID(),
+          CFGetTypeID(s) == AXValueGetTypeID() else { return nil }
+    var origin = CGPoint.zero
+    var size = CGSize.zero
+    AXValueGetValue(p as! AXValue, .cgPoint, &origin)
+    AXValueGetValue(s as! AXValue, .cgSize, &size)
+    return CGRect(origin: origin, size: size)
+}
+
+// Walks the application's AX tree breadth-first looking for the smallest
+// element whose frame contains `point` and whose role is in `preferredRoles`
+// (when provided). Falls back to the smallest containing element of any role.
+//
+// This exists because `AXUIElementCopyElementAtPosition` does not reliably
+// penetrate into table rows in Catalyst apps; the rows are reachable by
+// walking the tree but not by hit-test.
+fileprivate func findAXElement(in app: AXUIElement, at point: CGPoint, preferredRoles: Set<String>, maxNodes: Int = 4000) -> AXUIElement? {
+    var bestPreferred: (element: AXUIElement, area: CGFloat)? = nil
+    var bestAny: (element: AXUIElement, area: CGFloat)? = nil
+    var queue: [AXUIElement] = [app]
+    var visited = 0
+    while let current = queue.first, visited < maxNodes {
+        queue.removeFirst()
+        visited += 1
+        if let frame = axFrame(of: current), frame.contains(point) {
+            let area = frame.width * frame.height
+            if let role = axRole(of: current), preferredRoles.contains(role) {
+                if bestPreferred == nil || area < bestPreferred!.area {
+                    bestPreferred = (current, area)
+                }
+            }
+            if bestAny == nil || area < bestAny!.area {
+                bestAny = (current, area)
+            }
+        }
+        // Enqueue children
+        var children: AnyObject?
+        let cErr = AXUIElementCopyAttributeValue(current, kAXChildrenAttribute as CFString, &children)
+        if cErr == .success, let arr = children as? [AXUIElement] {
+            queue.append(contentsOf: arr)
+        }
+    }
+    return bestPreferred?.element ?? bestAny?.element
+}
+
 // Returns the role of an AX element, or nil if unavailable.
 fileprivate func axRole(of element: AXUIElement) -> String? {
     var role: AnyObject?
@@ -109,10 +162,16 @@ public func pressAccessibilityElement(pid: Int32, at point: CGPoint) throws {
 /// - Throws: `MacosUseSDKError` if hit-test fails or the AX set call rejects.
 public func setAccessibilitySelected(pid: Int32, at point: CGPoint, selected: Bool) throws {
     fputs("log: AX set selected=\(selected) at (\(point.x), \(point.y)) for pid \(pid)\n", stderr)
-    let hit = try axElement(at: point, pid: pid)
-    // Hit-test usually returns an AXCell or AXStaticText *inside* the row; walk
-    // up to the actual selectable container so the table reconciles selection.
-    let target = axAncestor(of: hit, matching: ["AXRow", "AXOutlineRow", "AXListItem"])
+    // Catalyst hit-test is unreliable for table rows (returns the window-level
+    // AXGroup, not the row). Walk the tree from the app root to find an
+    // AXRow/AXOutlineRow/AXListItem whose frame contains the point.
+    let app = AXUIElementCreateApplication(pid)
+    let preferredRoles: Set<String> = ["AXRow", "AXOutlineRow", "AXListItem"]
+    guard let target = findAXElement(in: app, at: point, preferredRoles: preferredRoles) else {
+        throw MacosUseSDKError.inputSimulationFailed(
+            "no selectable AX element found at (\(point.x), \(point.y)) for pid \(pid)"
+        )
+    }
     let targetRole = axRole(of: target) ?? "<unknown>"
     fputs("log: AX set selected target role=\(targetRole)\n", stderr)
     let value: CFBoolean = selected ? kCFBooleanTrue : kCFBooleanFalse
