@@ -117,11 +117,20 @@ fileprivate func axAncestor(of element: AXUIElement, matching targetRoles: Set<S
 /// - Throws: `MacosUseSDKError` if hit-test fails or the AX set call rejects.
 public func setAccessibilityValue(pid: Int32, at point: CGPoint, value: String) throws {
     fputs("log: AX set value at (\(point.x), \(point.y)) for pid \(pid): \"\(value)\"\n", stderr)
-    let element = try axElement(at: point, pid: pid)
+    // Tree-walk finder: hit-test does not penetrate into Catalyst app controls.
+    let app = AXUIElementCreateApplication(pid)
+    let preferredRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
+    guard let element = findAXElement(in: app, at: point, preferredRoles: preferredRoles) else {
+        throw MacosUseSDKError.inputSimulationFailed(
+            "no value-bearing AX element found at (\(point.x), \(point.y)) for pid \(pid)"
+        )
+    }
+    let targetRole = axRole(of: element) ?? "<unknown>"
+    fputs("log: AX set value target role=\(targetRole)\n", stderr)
     let err = AXUIElementSetAttributeValue(element, kAXValueAttribute as CFString, value as CFString)
     guard err == .success else {
         throw MacosUseSDKError.inputSimulationFailed(
-            "AXUIElementSetAttributeValue(kAXValueAttribute) failed at (\(point.x), \(point.y)) — AXError \(err.rawValue)"
+            "AXUIElementSetAttributeValue(kAXValueAttribute) on \(targetRole) failed at (\(point.x), \(point.y)) — AXError \(err.rawValue)"
         )
     }
     fputs("log: AX set value complete.\n", stderr)
@@ -137,11 +146,23 @@ public func setAccessibilityValue(pid: Int32, at point: CGPoint, value: String) 
 /// - Throws: `MacosUseSDKError` if hit-test fails or the action is unsupported.
 public func pressAccessibilityElement(pid: Int32, at point: CGPoint) throws {
     fputs("log: AX press at (\(point.x), \(point.y)) for pid \(pid)\n", stderr)
-    let element = try axElement(at: point, pid: pid)
+    // Tree-walk finder: hit-test does not penetrate into Catalyst app controls.
+    let app = AXUIElementCreateApplication(pid)
+    let preferredRoles: Set<String> = [
+        "AXButton", "AXMenuItem", "AXRadioButton", "AXCheckBox",
+        "AXMenuButton", "AXPopUpButton"
+    ]
+    guard let element = findAXElement(in: app, at: point, preferredRoles: preferredRoles) else {
+        throw MacosUseSDKError.inputSimulationFailed(
+            "no pressable AX element found at (\(point.x), \(point.y)) for pid \(pid)"
+        )
+    }
+    let targetRole = axRole(of: element) ?? "<unknown>"
+    fputs("log: AX press target role=\(targetRole)\n", stderr)
     let err = AXUIElementPerformAction(element, kAXPressAction as CFString)
     guard err == .success else {
         throw MacosUseSDKError.inputSimulationFailed(
-            "AXUIElementPerformAction(kAXPressAction) failed at (\(point.x), \(point.y)) — AXError \(err.rawValue)"
+            "AXUIElementPerformAction(kAXPressAction) on \(targetRole) failed at (\(point.x), \(point.y)) — AXError \(err.rawValue)"
         )
     }
     fputs("log: AX press complete.\n", stderr)
